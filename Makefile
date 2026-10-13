@@ -207,6 +207,18 @@ $(LUA_JS): $(WASM_O) scripts/host.mjs scripts/loader.js scripts/build-lua-js.mjs
 	node scripts/build-lua-js.mjs $@ $(WASM_O)
 lua-js: $(LUA_JS)
 
+# ── The benchmark (issue #54) ───────────────────────────────────────────────
+# lua.js against Wasmoon and fengari-web, pinned, in the same page under a
+# real engine: the workloads in bench/, 20 rotated rounds each on fresh
+# instances, plus load-to-first-print cold and warm. On demand, never
+# CI-gating (runner timing is noise); the table it prints is what
+# doc/bench.md records, with its run cited. BENCH_ENGINE selects the engine.
+BENCH_ENGINE?= chromium
+BENCH_PEERS= wasmoon@1.16.0 fengari-web@0.1.4
+bench: $(LUA_JS)
+	@[ -d node_modules/wasmoon ] && [ -d node_modules/fengari-web ] || npm i --no-save $(BENCH_PEERS)
+	node scripts/bench-witness.mjs $(LUA_JS) $(WASM_O) --engine $(BENCH_ENGINE)
+
 # ── The oracle and the differential witness ────────────────────────────────
 # Stock Lua 5.4.8 built natively for x86_64-linux-musl, statically, with
 # the same feature set (-DLUA_USE_LINUX): the reference the artifact is
@@ -223,4 +235,4 @@ differential: $(WASM_O) $(NATIVE_MUSL_LUA)
 	sh scripts/differential.sh $(WASM_O) $(NATIVE_MUSL_LUA)
 
 # list targets that do not create files (but not all makes understand .PHONY)
-.PHONY: all $(PLATS) clean test install uninstall local none dummy echo pc wasm lua-js lua-debug oracle differential
+.PHONY: all $(PLATS) clean test install uninstall local none dummy echo pc wasm lua-js bench lua-debug oracle differential

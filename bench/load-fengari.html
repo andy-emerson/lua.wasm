@@ -1,0 +1,9 @@
+<!doctype html>
+<!-- load-to-first-print, as fengari-web's README shows: its script and an
+     application/lua tag -->
+<html lang="en"><head><meta charset="utf-8"><title>load</title>
+<script>window.__load = {}; const rl = console.log.bind(console); console.log = (...a) => { if (a.join(' ') === 'hello' && !window.__load.firstPrint) window.__load.firstPrint = performance.now(); };</script>
+<script src="/vendor/fengari-web.js"></script>
+</head><body>
+<script type="application/lua">print("hello")</script>
+</body></html>
