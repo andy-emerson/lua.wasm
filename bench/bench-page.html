@@ -1,0 +1,70 @@
+<!doctype html>
+<!-- The benchmark page (issue #54): one of three Lua-in-the-browser
+     implementations, chosen by ?impl=luawasm|wasmoon|fengari, behind one
+     interface -- window.__bench.newVM() gives a fresh instance with
+     run(source) -> {ms, output} -- so scripts/bench-witness.mjs can time
+     the same workloads on each from the same page under the same engine.
+     print output is captured through console.log for all three (Wasmoon
+     and fengari print there; ours is pointed there), so the harness can
+     also check that every implementation printed the same result. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>lua.wasm benchmark</title>
+<script>
+  // capture print output before any implementation binds console.log
+  window.__out = [];
+  const realLog = console.log.bind(console);
+  console.log = (...a) => { window.__out.push(a.join(' ') + '\n'); };
+  window.__realLog = realLog;
+</script>
+</head>
+<body>
+<script>
+  const impl = new URLSearchParams(location.search).get('impl');
+  const load = (src) => new Promise((ok, err) => { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = () => err(new Error('load ' + src)); document.head.appendChild(s); });
+
+  window.__bench = { ready: null, impl };
+  window.__bench.ready = (async () => {
+    if (impl === 'luawasm') {
+      const { createLua } = await import('/host.mjs');
+      const module = await WebAssembly.compileStreaming(fetch('/lua.wasm'));
+      window.__bench.newVM = async () => {
+        const lua = await createLua(module, { stdout: t => window.__out.push(t), stderr: t => window.__out.push('stderr: ' + t) });
+        if (lua.init() !== 0) throw new Error('luaw_init failed');
+        return {
+          run: (src) => { const t0 = performance.now(); const r = lua.run(src, '=bench'); const ms = performance.now() - t0; if (r !== 0) throw new Error(lua.lastError()); return ms; },
+          close: () => {},
+        };
+      };
+    } else if (impl === 'wasmoon') {
+      await load('/vendor/wasmoon/index.js');
+      const factory = new wasmoon.LuaFactory('/vendor/wasmoon/glue.wasm');
+      window.__bench.newVM = async () => {
+        const engine = await factory.createEngine();
+        return {
+          run: async (src) => { const t0 = performance.now(); await engine.doString(src); return performance.now() - t0; },
+          close: () => engine.global.close(),
+        };
+      };
+    } else if (impl === 'fengari') {
+      await load('/vendor/fengari-web.js');
+      const { lua, lauxlib, lualib, to_luastring, to_jsstring } = fengari;
+      window.__bench.newVM = async () => {
+        const L = lauxlib.luaL_newstate();
+        lualib.luaL_openlibs(L);
+        return {
+          run: (src) => {
+            const t0 = performance.now();
+            if (lauxlib.luaL_loadstring(L, to_luastring(src)) !== lua.LUA_OK) throw new Error(to_jsstring(lua.lua_tostring(L, -1)));
+            if (lua.lua_pcall(L, 0, 0, 0) !== lua.LUA_OK) throw new Error(to_jsstring(lua.lua_tostring(L, -1)));
+            return performance.now() - t0;
+          },
+          close: () => lua.lua_close(L),
+        };
+      };
+    } else throw new Error('impl?');
+  })();
+</script>
+</body>
+</html>
