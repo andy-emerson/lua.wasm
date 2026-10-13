@@ -94,8 +94,9 @@ current emmalloc, which may have fixed `realloc`.
 ### 4. Against Wasmoon (2026-10-12)
 
 Wasmoon 1.16.0 (npm; Emscripten `-O3`, emmalloc, 27 imports: Emscripten's
-own plus WASI stdio) against the spike build (musl + mallocng, `-O3`,
-Binaryen `wasm-opt -O3`), Chromium 141, plain static server, 20 rotated
+own plus WASI stdio) against the spike build (musl + mallocng, `-O2` —
+asked for as `-O3`, but zig hands clang `-O2` for every level above `-O1`,
+found in the post-merge review below — Binaryen `wasm-opt -O3`), Chromium 141, plain static server, 20 rotated
 rounds, fresh engine per workload:
 
 | workload | lua.wasm (spike) | Wasmoon | ratio | p |
@@ -163,6 +164,29 @@ Deferred, recorded as open work: a non-JavaScript host test (wasmtime,
 issue #53) — "runs in any wasm host" is not claimed until one exists; D8
 (issue #52); a reproducible benchmark against Wasmoon in the repo (issue
 #54; the numbers above are session observations).
+
+## Post-merge review (2026-10-13, after merges 1–3)
+
+Every choice the Agent made without surfacing it was listed with its
+rejected options; the Human kept all but three, reopened here and closed:
+
+- **`os.clock`** (A2): musl's `clock()` is CPU time; a browser has no
+  CPU-time source for the thread running wasm. Chosen: wall time since
+  the VM was created (`luaw_init`/`luaw_main`), the analogue of process
+  start. Rejected: since the first clock read (the merge-2 behaviour; an
+  odd thing to document), since instantiation (counts host setup), a
+  `cpu()` import (answerable only in Node; reopen if a non-browser host
+  where CPU accounting matters asks for it). The one knowing divergence
+  from native; recorded in `doc/wasm.md`.
+- **Unimplemented syscalls** (A8): were silent `ENOSYS`. Chosen: `ENOSYS`
+  plus one stderr line per syscall number, asserted absent by the suite
+  witness. Rejected: trap (kills the VM on a benign probe). Its first run
+  found `rt_sigaction` and `mprotect` reached on every start; both now
+  answered.
+- **`-O2` vs `-O3`** (B5): closed by evidence, not measurement — zig
+  0.15.1 hands clang `-O2` for `-O1`, `-O2` and `-O3` alike (objects
+  byte-identical), so the spike numbers above were `-O2` builds and the
+  Makefile's `-O2` is the only level the toolchain offers.
 
 ## What this does not change
 
