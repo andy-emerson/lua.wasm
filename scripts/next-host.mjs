@@ -88,6 +88,7 @@ export async function createLua(source, opts = {}) {
       get: (path) => withCString(path, pp => { const lp = x.luaw_alloc(4); try { const dp = x.luaw_fs_get(pp, lp); return dp ? new Uint8Array(memory.buffer, dp, u32(lp)).slice() : null; } finally { x.luaw_free(lp); } }),
       getText: (path) => { const b = lua.fs.get(path); return b ? dec.decode(b) : null; },
       remove: (path) => withCString(path, pp => x.luaw_fs_remove(pp)),
+      mkdir: (path) => withCString(path, pp => x.luaw_fs_mkdir(pp)),
       list: () => { const p = x.luaw_fs_list(); const b = new Uint8Array(memory.buffer); const out = []; let i = p; while (b[i]) { let e = i; while (b[e]) e++; out.push(dec.decode(b.subarray(i, e))); i = e + 1; } return out; },
     },
   };

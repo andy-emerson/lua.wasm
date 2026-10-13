@@ -102,6 +102,8 @@ console.log('files');
   eq('fs.put over a directory prefix is -EISDIR', lua.fs.put('/lib', 'x'), -21);
   lua.run('print(io.open("/data.txt")) print(os.remove("/zz")) local n = os.tmpname() print(n:match("^/tmp/lua_") ~= nil, os.remove(n))');
   eq('errno text and numbers are Linux\'s', lua.take().stdout, 'nil\t/data.txt: No such file or directory\t2\nnil\t/zz: No such file or directory\t2\ntrue\ttrue\n');
+  lua.run('print(io.open("")) print(os.remove("")) print(os.rename("", "/x"))');
+  eq('the empty path is ENOENT, as on Linux (package.searchpath relies on it)', lua.take().stdout, 'nil\t: No such file or directory\t2\nnil\t: No such file or directory\t2\nnil\tNo such file or directory\t2\n');
 }
 
 console.log('environment and local time');

@@ -21,6 +21,8 @@ long luaw_fs_close(int fd);
 long luaw_fs_fcntl(int fd, int cmd, long arg);
 long luaw_fs_statx(int fd, const char *path, int flags, void *statx_out);
 long luaw_fs_access(const char *path);
+long luaw_fs_mkdir(const char *path);
+long luaw_fs_dup3(int oldfd, int newfd);
 long luaw_fs_unlink(const char *path, int flags);
 long luaw_fs_rename(const char *from, const char *to);
 long luaw_fs_mmap(int fd, unsigned long len, long long off);

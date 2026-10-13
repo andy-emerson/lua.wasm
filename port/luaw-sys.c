@@ -205,6 +205,8 @@ long __luaw_syscall(long n, long a, long b, long c, long d, long e, long f) {
     return is_tty(a) ? 0 : luaw_fs_fcntl((int)a, (int)b, c);
   case SYS_close:
     return is_tty(a) ? 0 : luaw_fs_close((int)a);
+  case SYS_dup3:                        /* freopen: the new file onto the old fd */
+    return is_tty(a) ? -EBADF : luaw_fs_dup3((int)a, (int)b);
 
   /* paths (dirfd is always AT_FDCWD: the working directory is "/") */
   case SYS_openat:
@@ -213,6 +215,8 @@ long __luaw_syscall(long n, long a, long b, long c, long d, long e, long f) {
     return luaw_fs_access((const char *)b);
   case SYS_unlinkat:
     return luaw_fs_unlink((const char *)b, (int)c);
+  case SYS_mkdirat:
+    return luaw_fs_mkdir((const char *)b);
   case SYS_renameat2:
     return luaw_fs_rename((const char *)b, (const char *)d);
   case SYS_statx:                       /* (dirfd, path, flags, mask, buf) */

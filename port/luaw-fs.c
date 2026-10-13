@@ -1,15 +1,19 @@
 /* luaw-fs.c -- the filesystem under musl: in memory, inside the module.
 **
-** Design (D4, doc/history/browser-native-2026-10-13.md): a flat table of
-** files keyed by normalised absolute path; directories exist only as
-** path prefixes; "/" is the working directory; nothing persists past the
-** instance. The host moves files in and out through the luaw_fs_*
-** exports at the bottom; Lua reaches them through musl (io.open, dofile,
-** require, os.remove, os.rename, os.tmpname, tmpfile), whose syscalls
-** luaw-sys.c routes to the handlers here. Semantics follow Linux where
-** Lua can observe them: errno values, O_APPEND/O_TRUNC/O_EXCL, seeking
-** past the end then writing (a zero-filled gap), an unlinked file living
-** on while it is open, rename replacing its target.
+** Design (D4, doc/history/browser-native-2026-10-13.md): files keyed by
+** normalised absolute path, with directories as entries of their own so
+** the rules Lua can observe are Linux's: "/" and "/tmp" exist from the
+** start (what every Linux process can count on; os.tmpname needs the
+** latter), the host's luaw_fs_put creates the parents of what it puts,
+** mkdir creates one, and creating a file in a directory that does not
+** exist fails with ENOENT. Nothing persists past the instance. The host
+** moves files in and out through the luaw_fs_* exports at the bottom;
+** Lua reaches them through musl (io.open, dofile, require, os.remove,
+** os.rename, os.tmpname, tmpfile), whose syscalls luaw-sys.c routes to
+** the handlers here. Other Linux semantics kept where Lua can see them:
+** errno values, O_APPEND/O_TRUNC/O_EXCL, seeking past the end then
+** writing (a zero-filled gap), an unlinked file living on while it is
+** open, rename replacing its target, an empty path being no name at all.
 **
 ** Memory comes from musl's malloc; the OS layer's mmap never calls back
 ** into the filesystem, so there is no re-entrancy. A write that cannot
@@ -32,7 +36,7 @@ typedef struct File {
 } File;
 
 typedef struct Fd {
-  File *file;                 /* NULL: free slot, or a directory if is_dir */
+  File *file;                 /* NULL for a directory or a free slot */
   long long pos;
   int flags;                  /* O_ACCMODE bits and O_APPEND */
   int used, is_dir;
@@ -42,11 +46,17 @@ typedef struct Fd {
 
 static File **files;          /* every live file, linked or not */
 static int nfiles, cap_files;
+static char **dirs;           /* every directory but "/", normalised */
+static int ndirs, cap_dirs;
 static Fd *fds;
 static int nfds;
 static unsigned next_ino = 1;
 
 /* ── paths ───────────────────────────────────────────────────────── */
+
+/* The empty path is not a name on Linux (open("") is ENOENT); every
+   path syscall checks it before normalising. */
+#define REJECT_EMPTY(path) do { if ((path)[0] == '\0') return -ENOENT; } while (0)
 
 /* absolute, "." and ".." resolved, no duplicate or trailing slashes;
    "/" for the root. Caller frees. NULL on ENOMEM. */
@@ -79,20 +89,82 @@ static char *normalise(const char *path) {
   return out;
 }
 
+/* the parent's length within a normalised path ("/a/b" -> 2, "/a" -> 1) */
+static size_t parent_len(const char *norm) {
+  const char *slash = strrchr(norm, '/');
+  return slash == norm ? 1 : (size_t)(slash - norm);
+}
+
 static File *find(const char *norm) {
   for (int i = 0; i < nfiles; i++)
     if (files[i]->path && strcmp(files[i]->path, norm) == 0) return files[i];
   return NULL;
 }
 
-/* a path is a directory when it is "/" or a proper prefix of some file */
-static int is_dir(const char *norm) {
-  size_t n = strlen(norm);
-  if (n == 1) return 1;
-  for (int i = 0; i < nfiles; i++) {
-    const char *q = files[i]->path;
-    if (q && strncmp(q, norm, n) == 0 && q[n] == '/') return 1;
+static int dir_index(const char *norm) {
+  for (int i = 0; i < ndirs; i++)
+    if (strcmp(dirs[i], norm) == 0) return i;
+  return -1;
+}
+
+static void seed_dirs(void) {
+  if (ndirs == 0 && !dirs) {
+    dirs = malloc(8 * sizeof *dirs);
+    if (!dirs) return;
+    cap_dirs = 8;
+    dirs[ndirs++] = strdup("/tmp");
   }
+}
+
+static int is_dir(const char *norm) {
+  seed_dirs();
+  return norm[1] == '\0' || dir_index(norm) >= 0;
+}
+
+static int parent_is_dir(const char *norm) {
+  size_t n = parent_len(norm);
+  char saved = ((char *)norm)[n];
+  int r;
+  ((char *)norm)[n] = '\0';
+  r = is_dir(n == 1 ? "/" : norm);
+  ((char *)norm)[n] = saved;
+  return r;
+}
+
+/* add one directory (parent assumed to exist); 0, -EEXIST, -ENOMEM */
+static int add_dir(const char *norm) {
+  seed_dirs();
+  if (dir_index(norm) >= 0) return -EEXIST;
+  if (ndirs == cap_dirs) {
+    int ncap = cap_dirs ? cap_dirs * 2 : 8;
+    char **nd = realloc(dirs, (size_t)ncap * sizeof *nd);
+    if (!nd) return -ENOMEM;
+    dirs = nd; cap_dirs = ncap;
+  }
+  dirs[ndirs] = strdup(norm);
+  if (!dirs[ndirs]) return -ENOMEM;
+  ndirs++;
+  return 0;
+}
+
+/* create every missing ancestor of a normalised path (mkdir -p) */
+static int ensure_parents(char *norm) {
+  for (char *p = norm + 1; *p; p++) {
+    if (*p != '/') continue;
+    *p = '\0';
+    if (!is_dir(norm)) { int r = add_dir(norm); if (r < 0 && r != -EEXIST) { *p = '/'; return r; } }
+    *p = '/';
+  }
+  return 0;
+}
+
+/* does anything live under this directory? */
+static int dir_in_use(const char *norm) {
+  size_t n = strlen(norm);
+  for (int i = 0; i < nfiles; i++)
+    if (files[i]->path && strncmp(files[i]->path, norm, n) == 0 && files[i]->path[n] == '/') return 1;
+  for (int i = 0; i < ndirs; i++)
+    if (strncmp(dirs[i], norm, n) == 0 && dirs[i][n] == '/') return 1;
   return 0;
 }
 
@@ -129,13 +201,6 @@ static int reserve(File *f, size_t need) {
   return 1;
 }
 
-static int set_content(File *f, const void *data, size_t len) {
-  if (!reserve(f, len)) return 0;
-  if (len) memcpy(f->data, data, len);
-  f->size = len;
-  return 1;
-}
-
 /* ── descriptors ─────────────────────────────────────────────────── */
 
 static Fd *fd_of(int fd) {
@@ -163,6 +228,7 @@ static int alloc_fd(void) {
 
 long luaw_fs_openat(const char *path, int flags, unsigned mode) {
   (void)mode;
+  REJECT_EMPTY(path);
   char *norm = normalise(path);
   if (!norm) return -ENOMEM;
   int acc = flags & O_ACCMODE;
@@ -173,6 +239,8 @@ long luaw_fs_openat(const char *path, int flags, unsigned mode) {
       if (acc != O_RDONLY || (flags & O_CREAT)) { free(norm); return -EISDIR; }
       dir = 1;
     } else if (!(flags & O_CREAT)) {
+      free(norm); return -ENOENT;
+    } else if (!parent_is_dir(norm)) {
       free(norm); return -ENOENT;
     } else {
       f = create(norm);         /* owns norm */
@@ -282,6 +350,7 @@ long luaw_fs_statx(int fd, const char *path, int flags, void *out) {
     else fill_statx(st, S_IFREG | 0644, d->file->ino, d->file->size);
     return 0;
   }
+  REJECT_EMPTY(path);
   char *norm = normalise(path);
   if (!norm) return -ENOMEM;
   File *f = find(norm);
@@ -293,6 +362,7 @@ long luaw_fs_statx(int fd, const char *path, int flags, void *out) {
 }
 
 long luaw_fs_access(const char *path) {
+  REJECT_EMPTY(path);
   char *norm = normalise(path);
   if (!norm) return -ENOMEM;
   int ok = find(norm) != NULL || is_dir(norm);
@@ -300,17 +370,34 @@ long luaw_fs_access(const char *path) {
   return ok ? 0 : -ENOENT;
 }
 
+long luaw_fs_mkdir(const char *path) {
+  REJECT_EMPTY(path);
+  char *norm = normalise(path);
+  if (!norm) return -ENOMEM;
+  long r;
+  if (find(norm) || is_dir(norm)) r = -EEXIST;
+  else if (!parent_is_dir(norm)) r = -ENOENT;
+  else r = add_dir(norm);
+  free(norm);
+  return r;
+}
+
 long luaw_fs_unlink(const char *path, int flags) {
+  REJECT_EMPTY(path);
   char *norm = normalise(path);
   if (!norm) return -ENOMEM;
   File *f = find(norm);
-  long r;
-  if (flags & AT_REMOVEDIR) {           /* rmdir: no directory is ever empty here */
-    r = f ? -ENOTDIR : is_dir(norm) ? -ENOTEMPTY : -ENOENT;
+  long r = 0;
+  if (flags & AT_REMOVEDIR) {           /* rmdir */
+    int di;
+    if (f) r = -ENOTDIR;
+    else if (norm[1] == '\0') r = -EBUSY;
+    else if ((di = dir_index(norm)) < 0) r = -ENOENT;
+    else if (dir_in_use(norm)) r = -ENOTEMPTY;
+    else { free(dirs[di]); dirs[di] = dirs[--ndirs]; }
   } else if (f) {
     free(f->path); f->path = NULL;      /* out of the namespace; data lives while open */
     release(f);
-    r = 0;
   } else {
     r = is_dir(norm) ? -EISDIR : -ENOENT;
   }
@@ -318,19 +405,93 @@ long luaw_fs_unlink(const char *path, int flags) {
   return r;
 }
 
+/* rename a file, or a directory with everything under it */
+static int reprefix(char **path, size_t oldlen, const char *newp, size_t newlen) {
+  char *np = malloc(strlen(*path) - oldlen + newlen + 1);
+  if (!np) return 0;
+  memcpy(np, newp, newlen);
+  strcpy(np + newlen, *path + oldlen);
+  free(*path); *path = np;
+  return 1;
+}
+
 long luaw_fs_rename(const char *from, const char *to) {
+  REJECT_EMPTY(from);
+  REJECT_EMPTY(to);
   char *nfrom = normalise(from), *nto = normalise(to);
   if (!nfrom || !nto) { free(nfrom); free(nto); return -ENOMEM; }
   File *f = find(nfrom);
   long r = 0;
-  if (!f) r = is_dir(nfrom) ? -EISDIR : -ENOENT;
-  else if (is_dir(nto)) r = -EISDIR;
-  else if (strcmp(nfrom, nto) != 0) {
-    File *victim = find(nto);
-    if (victim) { free(victim->path); victim->path = NULL; release(victim); }
-    free(f->path); f->path = nto; nto = NULL;
-  }
+  if (strcmp(nfrom, nto) == 0) { /* nothing to do */ }
+  else if (f) {
+    if (is_dir(nto)) r = -EISDIR;
+    else if (!parent_is_dir(nto)) r = -ENOENT;
+    else {
+      File *victim = find(nto);
+      if (victim) { free(victim->path); victim->path = NULL; release(victim); }
+      free(f->path); f->path = nto; nto = NULL;
+    }
+  } else if (is_dir(nfrom)) {
+    size_t fl = strlen(nfrom), tl = strlen(nto);
+    int di = dir_index(nfrom);
+    if (nfrom[1] == '\0' || di < 0) r = -EBUSY;
+    else if (find(nto)) r = -ENOTDIR;
+    else if (is_dir(nto) && dir_in_use(nto)) r = -ENOTEMPTY;
+    else if (strncmp(nto, nfrom, fl) == 0 && nto[fl] == '/') r = -EINVAL;
+    else if (!parent_is_dir(nto)) r = -ENOENT;
+    else {
+      int tdi = dir_index(nto);
+      if (tdi >= 0) { free(dirs[tdi]); dirs[tdi] = dirs[--ndirs]; di = dir_index(nfrom); }
+      for (int i = 0; i < nfiles; i++)
+        if (files[i]->path && strncmp(files[i]->path, nfrom, fl) == 0 && files[i]->path[fl] == '/')
+          if (!reprefix(&files[i]->path, fl, nto, tl)) r = -ENOMEM;
+      for (int i = 0; i < ndirs; i++)
+        if (i != di && strncmp(dirs[i], nfrom, fl) == 0 && dirs[i][fl] == '/')
+          if (!reprefix(&dirs[i], fl, nto, tl)) r = -ENOMEM;
+      free(dirs[di]); dirs[di] = nto; nto = NULL;
+    }
+  } else r = -ENOENT;
   free(nfrom); free(nto);
+  return r;
+}
+
+/* dup3: make newfd refer to oldfd's file (freopen uses it to put the
+   reopened file on the stream's original descriptor). Position is per
+   descriptor here, not shared as on Linux -- freopen does not care, and
+   nothing in Lua's library dups a descriptor it then keeps using. */
+long luaw_fs_dup3(int oldfd, int newfd) {
+  if (!fd_of(oldfd)) return -EBADF;
+  if (newfd == oldfd) return -EINVAL;
+  if (newfd < FD_BASE) return -EBADF;   /* the terminal's descriptors stay */
+  int i = newfd - FD_BASE;
+  if (i >= nfds) {
+    int ncap = nfds ? nfds : 8;
+    while (ncap <= i) ncap *= 2;
+    Fd *nf = realloc(fds, (size_t)ncap * sizeof *nf);
+    if (!nf) return -ENOMEM;
+    memset(nf + nfds, 0, (size_t)(ncap - nfds) * sizeof *nf);
+    fds = nf; nfds = ncap;
+  }
+  if (fds[i].used) luaw_fs_close(newfd);
+  fds[i] = *fd_of(oldfd);
+  if (fds[i].file) fds[i].file->opens++;
+  return newfd;
+}
+
+/* the host's mkdir -p: create a directory and any missing parents;
+   0, -EEXIST for an existing file at that path, or -errno */
+__attribute__((export_name("luaw_fs_mkdir"), used))
+int luaw_fs_mkdir_p(const char *path) {
+  if (path[0] == '\0') return -ENOENT;
+  char *norm = normalise(path);
+  if (!norm) return -ENOMEM;
+  int r = 0;
+  if (find(norm)) r = -EEXIST;
+  else if (!is_dir(norm)) {
+    r = ensure_parents(norm);
+    if (r == 0) r = add_dir(norm);
+  }
+  free(norm);
   return r;
 }
 
@@ -352,21 +513,30 @@ long luaw_fs_mmap(int fd, unsigned long len, long long off) {
 /* ── the host's side: the luaw_fs_* exports ──────────────────────── */
 #define LUAW_EXPORT(name) __attribute__((export_name(name), used))
 
-/* create or replace a file with these bytes; 0, or -errno */
+/* create or replace a file with these bytes, creating its directories;
+   0, or -errno */
 LUAW_EXPORT("luaw_fs_put") int luaw_fs_put(const char *path, const void *data, size_t len) {
+  if (path[0] == '\0') return -ENOENT;
   char *norm = normalise(path);
   if (!norm) return -ENOMEM;
   if (is_dir(norm)) { free(norm); return -EISDIR; }
   File *f = find(norm);
   if (f) free(norm);
-  else if (!(f = create(norm))) { free(norm); return -ENOMEM; }
-  return set_content(f, data, len) ? 0 : -ENOSPC;
+  else {
+    int r = ensure_parents(norm);
+    if (r < 0) { free(norm); return r; }
+    if (!(f = create(norm))) { free(norm); return -ENOMEM; }
+  }
+  if (!reserve(f, len)) return -ENOSPC;
+  if (len) memcpy(f->data, data, len);
+  f->size = len;
+  return 0;
 }
 
 /* the file's bytes and length, valid until the file is next written,
    renamed or removed; NULL (length 0) if there is no such file */
 LUAW_EXPORT("luaw_fs_get") const void *luaw_fs_get(const char *path, size_t *len) {
-  char *norm = normalise(path);
+  char *norm = path[0] ? normalise(path) : NULL;
   File *f = norm ? find(norm) : NULL;
   free(norm);
   if (!f) { if (len) *len = 0; return NULL; }
@@ -374,13 +544,13 @@ LUAW_EXPORT("luaw_fs_get") const void *luaw_fs_get(const char *path, size_t *len
   return f->size ? (const void *)f->data : (const void *)"";
 }
 
-/* remove a file (unlink semantics); 0, or -errno */
+/* remove a file (unlink semantics; a directory is EISDIR); 0, or -errno */
 LUAW_EXPORT("luaw_fs_remove") int luaw_fs_remove(const char *path) {
   return (int)luaw_fs_unlink(path, 0);
 }
 
-/* every path in the namespace, each NUL-terminated, then an empty entry;
-   the buffer is valid until the next call. "\0" when there are none. */
+/* every file path, each NUL-terminated, then an empty entry; the buffer
+   is valid until the next call. "\0" when there are none. */
 static char *listing;
 LUAW_EXPORT("luaw_fs_list") const char *luaw_fs_list(void) {
   size_t total = 1;
