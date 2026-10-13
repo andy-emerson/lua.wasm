@@ -4,15 +4,11 @@
 # Tags cut by release.yml are created with GITHUB_TOKEN, whose events
 # do not chain-trigger workflows, so release.yml also dispatches this
 # workflow explicitly; the on.push.tags trigger covers hand-pushed tags.
-# Each job is the closing evidence for a tracked issue; authored ahead
-# of its first run, so a job's first green IS the issue's "done".
 #
-#   clang20-plain    -> issue #14 (plain clang-20 witness)
-#   sjlj-probe       -> issue #18 (the C-sjlj route, per LLVM minor);
-#                       dispatch-only and NOT part of 'all': it is
-#                       EXPECTED red while LLVM's lowering is broken,
-#                       so it must never gate a tag. Its run log is
-#                       the probe record.
+#   clang20-plain    -> issue #14: the artifact builds and passes its
+#                       witnesses under llvm.org's plain clang-20 with
+#                       the Makefile DEFAULTS (no zig), proving the
+#                       build is not tied to one driver.
 name: deep-witness
 on:
   push:
@@ -22,12 +18,8 @@ on:
       job:
         description: "which deep witness to run"
         type: choice
-        options: [clang20-plain, sjlj-probe, all]
+        options: [clang20-plain, all]
         default: clang20-plain
-      llvm:
-        description: "LLVM major for sjlj-probe (apt.llvm.org suite + clang-N)"
-        type: string
-        default: "21"
 
 # On a tag push, `inputs` is empty: every job's `if` treats that event
 # as "all".
@@ -40,46 +32,24 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
-          node-version: '>=24.15 <25'  # 24.0-24.14 reject stable exnref (need --experimental-wasm-exnref); 24.15 turned it on
+          node-version: '>=24.15 <25'  # the standard EH encoding needs 24.15+ (D9)
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: llvm.org clang-20 + wasm32 runtime, noble wasi-libc
+      - name: llvm.org clang-20, lld, the wasm32 compiler-rt builtins
+        # No sysroot: the libc is the vendored musl, built here.
         run: |
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
           echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-20 main" | sudo tee /etc/apt/sources.list.d/llvm20.list
           sudo apt-get update
-          sudo apt-get install -y clang-20 lld-20 libclang-rt-20-dev-wasm32 wasi-libc
-      - run: python3 -m pip install wasmtime
-      - name: build with the Makefile DEFAULTS (clang++-20, /usr sysroot)
-        run: make wasm
-      - name: full suite under wasmtime
-        run: cd tests && python3 ../scripts/wasmtime-run.py ../lua.wasm -e"_port=true" all.lua
-      - name: full suite under Node 24
-        run: cd tests && node ../scripts/wasm-run.mjs ../lua.wasm -e"_port=true" all.lua
-
-  sjlj-probe:
-    # Issue #18's per-LLVM-minor probe of the plain-C setjmp/longjmp
-    # route. Dispatch-only, excluded from 'all' and from tag pushes:
-    # a red run is the expected, informative outcome while the
-    # lowering is broken. timeout = the issue's two-hour timebox.
-    if: github.event_name == 'workflow_dispatch' && inputs.job == 'sjlj-probe'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '>=24.15 <25'  # 24.0-24.14 reject stable exnref (need --experimental-wasm-exnref); 24.15 turned it on
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - name: llvm.org clang-${{ inputs.llvm }} + wasm32 runtime, noble wasi-libc
-        run: |
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ inputs.llvm }} main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          sudo apt-get update
-          sudo apt-get install -y clang-${{ inputs.llvm }} lld-${{ inputs.llvm }} libclang-rt-${{ inputs.llvm }}-dev-wasm32 wasi-libc
-      - run: python3 -m pip install wasmtime
-      - name: the probe (log is the record; red is an expected outcome)
-        run: scripts/sjlj-probe.sh clang-${{ inputs.llvm }} /usr
+          sudo apt-get install -y clang-20 lld-20 libclang-rt-20-dev-wasm32
+      - name: binaryen (wasm-opt) and zig for the native musl oracle only
+        run: npm i --no-save binaryen@132.0.0 && python3 -m pip install 'ziglang==0.15.1'
+      - name: build with the Makefile DEFAULTS (clang-20, clang++-20, llvm-ar-20)
+        run: make wasm MUSL_AR=llvm-ar-20 WASM_OPT=node_modules/binaryen/bin/wasm-opt
+      - name: host-interface witness
+        run: node scripts/interface-witness.mjs lua.wasm
+      - name: full official suite through stock lua.c, Node
+        run: node scripts/suite-witness.mjs lua.wasm tests
+      - name: differential against native Lua 5.4.8 on musl
+        run: make differential MUSL_AR=llvm-ar-20 WASM_OPT=node_modules/binaryen/bin/wasm-opt
