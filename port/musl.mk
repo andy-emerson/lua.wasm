@@ -112,4 +112,14 @@ $(MUSL_BUILD)/libc-smoke.wasm: port/test/libc-smoke.c $(MUSL_RT) $(MUSL_A)
 libc-smoke: $(MUSL_BUILD)/libc-smoke.wasm
 	node scripts/libc-smoke.mjs $<
 
-.PHONY: musl-libc libc-smoke
+# The allocator and the OS layer's memory under stress (port/test/
+# alloc-stress.c): no corruption across 300k random operations, and no
+# growth once the working set is stable -- freed pages are reused.
+$(MUSL_BUILD)/alloc-stress.wasm: port/test/alloc-stress.c $(MUSL_RT) $(MUSL_A)
+	$(WASM_CC) --target=wasm32-freestanding $(MUSL_SYSINC) -O2 -Wall -c $< -o $(MUSL_BUILD)/alloc-stress.o
+	$(WASM_CC) $(MUSL_LDFLAGS) $(MUSL_RT) $(MUSL_BUILD)/alloc-stress.o $(MUSL_A) -o $@
+
+libc-stress: $(MUSL_BUILD)/alloc-stress.wasm
+	node scripts/libc-stress.mjs $<
+
+.PHONY: musl-libc libc-smoke libc-stress
