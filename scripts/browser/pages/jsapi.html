@@ -1,0 +1,51 @@
+<!doctype html>
+<!-- D8 row 11: the JavaScript surface. A call from JavaScript prints to
+     the console unless Lua.on redirects it; run throws with the Lua
+     message; start/step drive a program a frame at a time, exchange a
+     message each way, and serve a lazy require; files, env, exitCode. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>jsapi</title><script src="/lua.js"></script></head>
+<body>
+<script type="text/lua">tagvar = "set by the tag"</script>
+<script>
+  window.__api = { done: false };
+  (async () => {
+    const r = window.__api;
+    try {
+      await Lua.ready;
+      r.notReadyIsSync = typeof Lua.run === 'function';
+      Lua.run('print("to the console", tagvar)');                    // console.log
+      try { Lua.run('error("from js")', '=mine'); r.thrown = 'none'; }
+      catch (e) { r.thrown = e.message; }                             // mine:1: from js
+      const got = [];
+      Lua.on('print', t => got.push(t));
+      Lua.run('io.write("a") print("b")');
+      Lua.on('print', null);
+      r.redirected = got;
+      Lua.files.put('data/in.txt', 'hello file');
+      Lua.run('local f = assert(io.open("data/in.txt")) out = f:read("a") f:close() io.open("out.txt", "w"):write(out:upper()):close()');
+      r.fileRound = Lua.files.getText('out.txt');
+      r.listed = Lua.files.list().filter(p => p.endsWith('.txt')).sort();
+      Lua.env('GREETING', 'hi');
+      const env = [];
+      Lua.on('print', t => env.push(t));
+      Lua.run('print(os.getenv("GREETING"))');
+      Lua.on('print', null);
+      r.envseen = env.join('');
+      Lua.start('local m = require "util" local got = coroutine.yield("ready " .. m.greet("js")) coroutine.yield("got " .. got) return "end"');
+      r.steps = [];
+      let s = await Lua.step();           // serves the require, then the first yield
+      r.steps.push([s, Lua.message]);
+      s = await Lua.step('reply');
+      r.steps.push([s, Lua.message]);
+      s = await Lua.step();
+      r.steps.push([s, Lua.message]);
+      try { Lua.run('os.exit(9)'); r.exit = 'no trap'; }
+      catch (e) { r.exit = [e.message, Lua.exitCode]; }
+      try { Lua.run('print(1)'); r.afterExit = 'ran'; } catch (e) { r.afterExit = e.message; }
+    } catch (e) { r.error = e.message; }
+    r.done = true;
+  })();
+</script>
+</body>
+</html>

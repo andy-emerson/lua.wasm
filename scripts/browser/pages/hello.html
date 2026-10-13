@@ -1,0 +1,22 @@
+<!doctype html>
+<!-- D8 rows 1, 5, 6: print goes to the page where the tag sits; one Lua
+     state per page (x set in the first tag is read by the second); tags
+     run in document order after load; a tag in <head> prints at the end
+     of the body. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>hello</title>
+<script type="text/lua">print("from head")</script>
+<script src="/lua.js"></script>
+</head>
+<body>
+<h1>hello</h1>
+<script type="text/lua">
+  x = 41
+  print("hello from " .. _VERSION)
+</script>
+<p>between</p>
+<script type="text/lua">print(x + 1)</script>
+</body>
+</html>

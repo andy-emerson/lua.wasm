@@ -17,21 +17,17 @@
 // asserts crossOriginIsolated is false in the page: no COOP/COEP, no
 // SharedArrayBuffer, no workers are involved.
 //
-// --engine is REQUIRED and never defaults, with three guards:
-// no fallback to another engine if the
-// requested one will not launch; Playwright's launcher type must equal
-// --engine; the page's own user-agent fingerprint must equal --engine.
-// Requires playwright-core resolvable from the invoking directory and the
-// browser installed (npx playwright install <engine>); CHROMIUM=/FIREFOX=/
-// WEBKIT=<path> override the executable for their own engine only.
+// --engine is REQUIRED and never defaults, with the three guards of
+// scripts/browser/engine.mjs (no fallback engine, the launcher type, the
+// page's own user-agent fingerprint).
 import { createServer } from 'node:http';
 import { readFile, readdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createRequire } from 'node:module';
+
 
 import { LOCALE_PRELUDE } from './host.mjs';
+import { ENGINES, launch } from './browser/engine.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -47,7 +43,6 @@ for (let i = 0; i < argv.length; i++) {
   else positional.push(argv[i]);
 }
 const [wasmPath] = positional;
-const ENGINES = ['chromium', 'firefox', 'webkit'];
 if (!wasmPath || !engine || !ENGINES.includes(engine)) {
   console.error('usage: node scripts/browser-witness.mjs <lua.wasm> --engine <chromium|firefox|webkit> [--tests <dir>] [--argv <json>] [--expect TEXT]');
   process.exit(2);
@@ -75,30 +70,11 @@ const server = createServer(async (req, res) => {
 await new Promise(ok => server.listen(0, '127.0.0.1', ok));
 const base = `http://127.0.0.1:${server.address().port}`;
 
-// --- launch the REQUESTED engine, with no fallback ----------------------------
-const require = createRequire(resolve(process.cwd(), 'noop.js'));
-let pw;
-try { pw = require('playwright-core'); } catch { pw = require('playwright'); }   // either package exports the browser types
-const browserType = pw[engine];
-const exeVar = { chromium: 'CHROMIUM', firefox: 'FIREFOX', webkit: 'WEBKIT' }[engine];
-const exePath = process.env[exeVar] && existsSync(process.env[exeVar]) ? process.env[exeVar] : undefined;
-
-let browser;
-try {
-  browser = await browserType.launch(exePath ? { executablePath: exePath } : {});
-} catch (e) {
-  console.error(`FATAL: could not launch ${engine} (no fallback to another engine): ${e.message}`);
-  server.close();
-  process.exit(3);
-}
+// --- launch the REQUESTED engine, with no fallback (scripts/browser/engine.mjs)
+const browser = await launch(engine, () => server.close());
 
 try {
-  const launched = browser.browserType().name();
-  if (launched !== engine) {
-    console.log(`ENGINE MISMATCH (launcher): requested ${engine}, launched ${launched}`);
-    console.log(`BROWSER WITNESS FAIL (${engine})`);
-    process.exitCode = 1;
-  } else {
+  {
     const page = await browser.newPage();
     page.on('pageerror', e => console.log(`[page error] ${e.message}`));
     const env = { LUA_INIT: LOCALE_PRELUDE, PATH: '/usr/bin:/bin' };

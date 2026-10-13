@@ -377,9 +377,12 @@ LUAW_API int luaw_step (const char *msg, size_t len) {
     luaw_seterror(co);
   else
     lua_pop(co, nres);   /* return values at the end are not messages */
-  /* finished or failed either way: release the program */
+  /* finished or failed either way: release the program, and the message
+     of its last yield (this step yielded nothing) */
   lua_pushnil(luaw_L);
   lua_setfield(luaw_L, LUA_REGISTRYINDEX, LUAW_COKEY);
+  lua_pushnil(luaw_L);
+  lua_setfield(luaw_L, LUA_REGISTRYINDEX, LUAW_MSGKEY);
   return status;
 }
 

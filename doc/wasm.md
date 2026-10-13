@@ -79,7 +79,10 @@ back. `luaw_step(msg, len)` passes a string to the resident program as
 the result of its `coroutine.yield`, and `luaw_message(len_out)` returns
 the first value the program yielded (a string or a number) — the message
 channel each way. `luaw_fs_list` returns NUL-separated paths,
-double-NUL terminated. [`../scripts/host.mjs`](../scripts/host.mjs) is
+double-NUL terminated. The reference host adds two conveniences over
+the imports: `setStdin(data)` replaces what `read` has left to give,
+and `setPrompt(fn)` asks `fn` for a line whenever it is empty (how a
+page serves `data-stdin` and `data-stdin="prompt"`). [`../scripts/host.mjs`](../scripts/host.mjs) is
 the reference for all of it; [`../scripts/browser/lua-page.html`](../scripts/browser/lua-page.html)
 drives it from a page.
 
@@ -99,6 +102,10 @@ in memory inside the module and do not persist; `/` is the working
 directory. `io.popen` and `os.execute` fail as on a machine with no shell.
 
 ## Running it
+
+In a web page, use `lua.js` ([`lua-js.md`](lua-js.md)): it carries this
+module and drives it the way described here. The rest of this section
+is the module on its own.
 
 ```bash
 node scripts/lua.mjs lua.wasm -- -e 'print(1)'
@@ -157,7 +164,7 @@ memory counts. Any other difference is a bug in the port.
 
 ## The other witnesses
 
-`scripts/interface-witness.mjs lua.wasm` (72 checks): the import list,
+`scripts/interface-witness.mjs lua.wasm` (74 checks): the import list,
 every export, the exit path, the message channel, the filesystem, and
 the adversarial battery (contained stack overflow, mid-flight program
 death and replacement, a 50k-frame pump, GC under allocation pressure).

@@ -69,6 +69,16 @@ console.log('stdin through read');
   lua.init();
   lua.run('print(io.read("a") == "", io.read("l"))');
   eq('no stdin: read("a") is "" and read("l") is nil', lua.take().stdout, 'true\tnil\n');
+  /* the host can refill stdin between runs, and can be asked per line
+     (how lua.js serves data-stdin and data-stdin="prompt") */
+  lua.setStdin('again\n');
+  lua.run('print(io.read("l"), io.read("l"))');
+  eq('setStdin replaces what is left to read', lua.take().stdout, 'again\tnil\n');
+  const lines = ['one', 'two', null];
+  lua.setPrompt(() => lines.shift());
+  lua.run('print(io.read("l"), io.read("l"), io.read("l"))');
+  eq('setPrompt is asked for a line whenever stdin is empty, until it answers null', lua.take().stdout, 'one\ttwo\tnil\n');
+  lua.setPrompt(null);
 }
 
 console.log('the clock');
@@ -199,7 +209,7 @@ console.log('the resident program and the message channel');
   eq('step 5: no program -> LUA_ERRRUN with the reason', [lua.step(), lua.lastError()], [2, 'no resident program (luaw_start first)']);
   eq('luaw_start of a bad chunk returns LUA_ERRSYNTAX', [lua.start('x = = 1', '=p'), lua.lastError()], [3, "p:1: unexpected symbol near '='"]);
   eq('a program that errors mid-flight: status 2, message, program released', (lua.start('coroutine.yield("alive") error("died")'), [lua.step(), lua.message(), lua.step(), lua.lastError(), lua.step()]), [1, 'alive', 2, '(program):1: died', 2]);
-  eq('a replacement program starts clean', (lua.start('coroutine.yield("new") return 1'), [lua.step(), lua.message(), lua.step()]), [1, 'new', 0]);
+  eq('a replacement program starts clean; finishing clears the last message', (lua.start('coroutine.yield("new") return 1'), [lua.step(), lua.message(), lua.step(), lua.message()]), [1, 'new', 0, null]);
   eq('a message with embedded NUL round-trips', (lua.start('local m = ... coroutine.yield(#m .. ":" .. m)'), lua.step('a\0b'), lua.message()), '3:a\0b');
 }
 

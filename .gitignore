@@ -1,4 +1,5 @@
 lua.wasm
+lua.js
 lua-debug
 tests/libs/*.so
 tests/libs/all

@@ -196,6 +196,17 @@ $(WASM_O): $(MUSL_BUILD)/lua.linked.wasm
 
 wasm: $(WASM_O)
 
+# ── The loader: lua.js ─────────────────────────────────────────────────────
+# One classic script a page includes to run <script type="text/lua"> tags
+# and to reach the VM from JavaScript (D8 in the design record): host.mjs,
+# scripts/loader.js and lua.wasm itself (base64) in one IIFE -- the one
+# shipped form; the build prints its size against the module alone.
+# Witness: scripts/lua-js-witness.mjs (three engines, and from file://).
+LUA_JS= lua.js
+$(LUA_JS): $(WASM_O) scripts/host.mjs scripts/loader.js scripts/build-lua-js.mjs
+	node scripts/build-lua-js.mjs $@ $(WASM_O)
+lua-js: $(LUA_JS)
+
 # ── The oracle and the differential witness ────────────────────────────────
 # Stock Lua 5.4.8 built natively for x86_64-linux-musl, statically, with
 # the same feature set (-DLUA_USE_LINUX): the reference the artifact is
@@ -212,4 +223,4 @@ differential: $(WASM_O) $(NATIVE_MUSL_LUA)
 	sh scripts/differential.sh $(WASM_O) $(NATIVE_MUSL_LUA)
 
 # list targets that do not create files (but not all makes understand .PHONY)
-.PHONY: all $(PLATS) clean test install uninstall local none dummy echo pc wasm lua-debug oracle differential
+.PHONY: all $(PLATS) clean test install uninstall local none dummy echo pc wasm lua-js lua-debug oracle differential

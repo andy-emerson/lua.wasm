@@ -1,7 +1,7 @@
 # Release cut -- fired MANUALLY (workflow_dispatch; issue #19). Builds
-# lua.wasm with the pinned toolchain in its release form, re-verifies it
-# (host interface + full suite under Node + differential), then tags and
-# publishes with the artifact attached. Green witnesses gate the tag: a
+# lua.wasm with the pinned toolchain in its release form and lua.js with
+# it inlined, re-verifies the module (host interface + full suite under
+# Node + differential), then tags and publishes with both attached. Green witnesses gate the tag: a
 # release cannot be cut from a build that didn't just prove itself.
 name: release
 on:
@@ -47,6 +47,8 @@ jobs:
           WASM_CLANGXX="python3 -m ziglang c++"
           WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling"
           WASM_OPT=node_modules/binaryen/bin/wasm-opt
+      - name: build lua.js (lua.wasm inlined)
+        run: make lua-js WASM_OPT=node_modules/binaryen/bin/wasm-opt
       - name: tag and publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -54,8 +56,8 @@ jobs:
           gh release create "${{ inputs.version }}" \
             --target "${{ github.sha }}" \
             --title "lua.wasm ${{ inputs.version }}" \
-            --notes "Stock Lua 5.4.8 on musl 1.2.6, as one WebAssembly module for the browser: three imports (luaw.write, luaw.now, luaw.read), no WASI, no Emscripten, no special headers. Standard wasm exception-handling encoding; runs in Chrome >= 137, Firefox >= 131, Safari >= 18.4, Node >= 24.15. Host contract and witnesses: README and doc/wasm.md at this tag; design: doc/history/browser-native-2026-10-13.md. Built with zig 0.15.1 (clang 20.1.2) and binaryen 132; witnesses re-run at cut time by this workflow." \
-            lua.wasm
+            --notes "Stock Lua 5.4.8 in a web page. lua.js: one file -- <script src=lua.js></script> then <script type=text/lua> -- with lua.wasm carried inside; print lands on the page, require fetches modules lazily, coroutine.yield() animates per frame, local time is the visitor's, and the Lua global reaches the VM from JavaScript (README, doc/lua-js.md). lua.wasm: the module alone, three imports (luaw.write, luaw.now, luaw.read), no WASI, no Emscripten (doc/wasm.md). Standard wasm exception-handling encoding; Chrome >= 137, Firefox >= 131, Safari >= 18.4, Node >= 24.15. Built with zig 0.15.1 (clang 20.1.2) and binaryen 132; the module's witnesses re-run at cut time by this workflow, lua.js's on every change." \
+            lua.wasm lua.js
       - name: fire the release-tier deep witnesses against the tag
         # The tag above is created with GITHUB_TOKEN, whose events do not
         # chain-trigger on.push workflows -- dispatch deep-witness (the
