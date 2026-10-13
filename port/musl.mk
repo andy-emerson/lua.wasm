@@ -4,11 +4,14 @@
 # What musl's own build does, mirrored here: generate the two derived
 # headers (bits/alltypes.h, bits/syscall.h) with musl's sed tools from the
 # arch's .in files, compile src/**/*.c with musl's C99 freestanding flags,
-# archive. Our arch is port/wasm32 (five headers and a bits/ directory;
-# bits/syscall.h.in and most of bits/ are riscv32's, verbatim -- the
-# generic 32-bit tables), the OS underneath is port/luaw-sys.c (one
-# syscall dispatcher over the three luaw imports), and the crt is
-# port/luaw-crt.c (_initialize runs the constructors; no main).
+# archive. Our arch is port/wasm32 (six headers, of which crt_arch.h and
+# kstat.h are placeholders nothing compiled here includes, and a bits/
+# directory; bits/syscall.h.in and the rest of bits/ are riscv32's,
+# verbatim -- the generic 32-bit tables -- except alltypes.h.in, where
+# _Addr and _Reg are long to match clang's wasm32 size_t and intptr_t),
+# the OS underneath is port/luaw-sys.c (one syscall dispatcher over the
+# three luaw imports), and the crt is port/luaw-crt.c (_initialize runs
+# the constructors; no main).
 #
 # Only the source directories Lua's libc use reaches are compiled; the
 # archive still resolves lazily, so an unused translation unit costs

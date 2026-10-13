@@ -13,8 +13,9 @@
 #   plain page (no COOP/COEP, no SharedArrayBuffer, no workers), and the
 #   lua.js witness: one page per D8 row, in the same three engines and
 #   from a file:// page.
-# provenance: the vendored Lua core is verbatim stock 5.4.8 outside the
-#   declared file, and the vendored musl is the signed 1.2.6 release.
+# provenance: the vendored Lua core and official test suite are verbatim
+#   stock 5.4.8 (src/onelua.c and the tests/libs/P1 placeholder are this
+#   repository's), and the vendored musl is the signed 1.2.6 release.
 #
 # Toolchain: zig (pinned 0.15.1 = clang 20.1.2) -- the standard EH
 # encoding needs LLVM 20+, which Ubuntu does not package; zig's cc/c++/ar
@@ -139,12 +140,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
-      - name: vendored core is verbatim stock 5.4.8 (issue #7)
+      - name: vendored core and test suite are verbatim stock 5.4.8 (issue #7)
         # lua.org egress exists on runners but not in every authoring
         # sandbox -- this job is the witness's CI home. The sha256 echo
-        # re-states the tarball hash so a pin drift (verify-stock.sh's
+        # re-states the source tarball hash so a pin drift (verify-stock.sh's
         # LUA_SHA256, filled from run 28798839189) is diagnosable from
-        # the log.
+        # the log; the script fetches and pins the test-suite tarball too.
         run: |
           curl -fsSL -o /tmp/lua.tar.gz https://www.lua.org/ftp/lua-5.4.8.tar.gz
           echo "lua-5.4.8.tar.gz sha256 (for the LUA_SHA256 pin in verify-stock.sh):"

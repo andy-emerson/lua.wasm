@@ -56,7 +56,8 @@ static void luaw_sys_init(void) {
 ** then reaches SYS_exit_group here: the status is recorded for the
 ** luaw_exit_code export and the module traps -- the one event that
 ** unwinds into the host, and the only way nothing inside (pcall
-** included) can intercept it. Every later entry refuses (luaw_exited). */
+** included) can intercept it. Every later entry that would run Lua
+** refuses (luaw_exited, read by onelua.c); the libc itself is intact. */
 int luaw_exited = 0;
 int luaw_exit_status = 0;
 

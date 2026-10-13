@@ -53,7 +53,10 @@ it is there; if not, the script asks the page, which fetches
 `util.lua` beside itself (dots become slashes: `require "deep.helper"`
 fetches `deep/helper.lua`), puts it in the filesystem and resumes — so
 modules need no listing. A module's own `require`s are served the
-same way. Two limits: a `require` called from inside a C function (a
+same way. What a program sees is stock `require`: its results, its
+use of `package.loaded`, `package.preload` and `package.path`, and its
+error messages byte for byte (the witness compares them with native
+Lua). Two limits: a `require` called from inside a C function (a
 `table.sort` comparator, a `string.gsub` callback) cannot pause to
 fetch and fails with the stock "module not found" message plus a hint
 to list the module in `data-files`; and a fetch that fails appends its
@@ -98,7 +101,7 @@ console (its terminal), not to the page, unless redirected.
 
 | | |
 |---|---|
-| `await Lua.ready` | resolves (with `Lua`) once the VM exists and the page's tags have run; every call below throws before that, even while a tag is still running |
+| `await Lua.ready` | resolves (with `Lua`) once the VM exists and the page's tags have run; every function below throws before that, even while a tag is still running (the two properties, `message` and `exitCode`, read `null`) |
 | `Lua.run(source, name?)` | run a chunk to completion; throws an `Error` carrying the Lua message |
 | `Lua.start(source, name?)` | load a program as the resident coroutine |
 | `await Lua.step(msg?)` | resume it once: resolves `1` while it is alive and yielded, `0` when it finished; throws on error. `msg` is what its `coroutine.yield()` returns (the chunk's `...` on the first step). A lazy `require` inside the program is served before `step` resolves |
@@ -108,7 +111,7 @@ console (its terminal), not to the page, unless redirected.
 | `Lua.files.list()` / `remove(path)` / `mkdir(path)` | the rest of the filesystem |
 | `Lua.env(name, value)` | set an environment variable (`null` removes it); the environment starts empty |
 | `Lua.on('print', fn)` / `Lua.on('error', fn)` | where output and errors of JavaScript calls go; `null` restores the console |
-| `Lua.exitCode` | after `os.exit`: its status; `Lua.run` and `Lua.step` throw `VM exited` from then on |
+| `Lua.exitCode` | after `os.exit`: its status; `Lua.run`, `start`, `step`, `files.*` and `env` throw `VM exited (status N)` from then on |
 
 A program driven from JavaScript talks to the page through the message
 channel — a string each way per step — and nothing else: there is no
