@@ -281,8 +281,26 @@ WASM_NEXT_CFLAGS= --target=wasm32-freestanding $(MUSL_SYSINC) -O2 -fno-strict-al
 $(MUSL_BUILD)/onelua-next.o: src/onelua.c $(MUSL_GENH)
 	$(WASM_CLANGXX) $(WASM_NEXT_CFLAGS) -c -x c++ $< -o $@
 
-$(WASM_NEXT_O): $(MUSL_BUILD)/onelua-next.o $(MUSL_RT) $(MUSL_A)
-	$(WASM_CLANGXX) $(MUSL_LDFLAGS) $(MUSL_RT) $(MUSL_BUILD)/onelua-next.o $(MUSL_A) -o $@
+# Release form: debug sections stripped at link, then Binaryen's
+# wasm-opt -O3 (what Emscripten runs after every link; measured in the
+# design record: -10% size, +16% on a compute loop). WASM_OPT names the
+# binary (CI installs binaryen from npm: node_modules/binaryen/bin/
+# wasm-opt); WASM_OPT= empty skips the pass and ships the linked module.
+# The witnesses run on this file, so what is tested is what ships.
+WASM_OPT?= wasm-opt
+WASM_OPT_FLAGS= -O3 --enable-exception-handling --enable-bulk-memory \
+	  --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals \
+	  --enable-multivalue --enable-reference-types
+
+$(MUSL_BUILD)/lua-next.linked.wasm: $(MUSL_BUILD)/onelua-next.o $(MUSL_RT) $(MUSL_A)
+	$(WASM_CLANGXX) $(MUSL_LDFLAGS) -Wl,--strip-all $(MUSL_RT) $(MUSL_BUILD)/onelua-next.o $(MUSL_A) -o $@
+
+$(WASM_NEXT_O): $(MUSL_BUILD)/lua-next.linked.wasm
+	@if [ -n "$(WASM_OPT)" ]; then \
+	  echo "$(WASM_OPT) $(WASM_OPT_FLAGS) $< -o $@"; \
+	  $(WASM_OPT) $(WASM_OPT_FLAGS) $< -o $@; \
+	else cp $< $@; fi
+	@node -e 'const z=require("zlib"),b=require("fs").readFileSync(process.argv[1]);console.log(process.argv[1]+": "+b.length+" bytes ("+z.brotliCompressSync(b).length+" brotli, "+z.gzipSync(b,{level:9}).length+" gzip)")' $@
 
 wasm-next: $(WASM_NEXT_O)
 
