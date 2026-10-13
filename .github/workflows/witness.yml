@@ -88,6 +88,8 @@ jobs:
           WASM_OPT=node_modules/binaryen/bin/wasm-opt
       - name: host-interface witness (imports, exports, exit, messages, adversarial battery)
         run: node scripts/interface-witness.mjs lua.wasm
+      - name: exception handling stays in one function (the interpreter carries no landing pads)
+        run: node scripts/eh-check.mjs lua.wasm
       - name: full official suite through stock lua.c (luaw_main), Node
         run: node scripts/suite-witness.mjs lua.wasm tests
       - name: differential against native Lua 5.4.8 on musl (byte-identical stdout, stderr, exit status)

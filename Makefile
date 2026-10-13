@@ -104,9 +104,9 @@ pc:
 
 # == WASM ======================================================================
 # The artifact: stock Lua 5.4.8 as one translation unit (src/onelua.c),
-# compiled as C++ so Lua's error handling rides wasm exception handling
-# (the bundled catch(...)-only micro-runtime in onelua.c; no libc++abi),
-# on upstream musl (third_party/musl, verbatim; built for wasm32 by
+# compiled as C, with its error handling routed to the one C++ unit
+# port/luaw-eh.cpp, which rides wasm exception handling (a bundled
+# catch(...)-only micro-runtime; no libc++abi), on upstream musl (third_party/musl, verbatim; built for wasm32 by
 # port/musl.mk) with the OS under it in port/ (luaw-sys.c, luaw-fs.c).
 # The module imports exactly three functions -- luaw.write, luaw.now,
 # luaw.read -- and runs in any current browser from a plain page, in
@@ -141,9 +141,10 @@ WASM_EXTRA=
 # byte-identical, checked 2026-10-13; only -Os differs), so -O3 is not a
 # choice this toolchain offers and plain clang-20 is kept at -O2 to match.
 WASM_CFLAGS= --target=wasm32-freestanding $(MUSL_SYSINC) -O2 -fno-strict-aliasing \
-	  -fwasm-exceptions -nostdlib++ -Isrc \
-	  -DLUA_USE_LINUX -DLUA_USE_JUMPTABLE=0 \
-	  -DMAKE_LUA -DMAKE_REACTOR \
+	  -Isrc -DLUA_USE_LINUX -DLUA_USE_JUMPTABLE=0 \
+	  -DMAKE_LUA -DMAKE_REACTOR $(WASM_EXTRA)
+# the one C++ unit: Lua's throw/catch on the standard wasm EH encoding
+WASM_EHFLAGS= --target=wasm32-freestanding $(MUSL_SYSINC) -O2 -fwasm-exceptions -nostdlib++ \
 	  -mllvm -wasm-use-legacy-eh=false $(WASM_EXTRA)
 
 # The deepest witness: a native debug interpreter with upstream's
@@ -182,10 +183,13 @@ WASM_OPT_FLAGS= -O3 --enable-exception-handling --enable-bulk-memory \
 	  --enable-multivalue --enable-reference-types
 
 $(MUSL_BUILD)/onelua.o: src/onelua.c $(MUSL_GENH)
-	$(WASM_CLANGXX) $(WASM_CFLAGS) -c -x c++ $< -o $@
+	$(WASM_CC) $(WASM_CFLAGS) -c $< -o $@
 
-$(MUSL_BUILD)/lua.linked.wasm: $(MUSL_BUILD)/onelua.o $(MUSL_RT) $(MUSL_A)
-	$(WASM_CLANGXX) $(MUSL_LDFLAGS) -Wl,--strip-all $(MUSL_RT) $(MUSL_BUILD)/onelua.o $(MUSL_A) -o $@
+$(MUSL_BUILD)/luaw-eh.o: port/luaw-eh.cpp $(MUSL_GENH)
+	$(WASM_CLANGXX) $(WASM_EHFLAGS) -c $< -o $@
+
+$(MUSL_BUILD)/lua.linked.wasm: $(MUSL_BUILD)/onelua.o $(MUSL_BUILD)/luaw-eh.o $(MUSL_RT) $(MUSL_A)
+	$(WASM_CLANGXX) $(MUSL_LDFLAGS) -Wl,--strip-all $(MUSL_RT) $(MUSL_BUILD)/onelua.o $(MUSL_BUILD)/luaw-eh.o $(MUSL_A) -o $@
 
 $(WASM_O): $(MUSL_BUILD)/lua.linked.wasm
 	@if [ -n "$(WASM_OPT)" ]; then \
