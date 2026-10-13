@@ -60,7 +60,7 @@ MUSL_SYSINC= -nostdinc -I$(MUSL_ARCH) -I$(MUSL_DIR)/arch/generic \
 # driver. Order: crt, OS layer, the program, libc.
 MUSL_LDFLAGS= --target=wasm32-freestanding -nostdlib -Wl,--no-entry \
   -Wl,--export-dynamic -Wl,-z,stack-size=$(WASM_STACK)
-MUSL_RT= $(MUSL_BUILD)/luaw-crt.o $(MUSL_BUILD)/luaw-sys.o
+MUSL_RT= $(MUSL_BUILD)/luaw-crt.o $(MUSL_BUILD)/luaw-sys.o $(MUSL_BUILD)/luaw-fs.o
 
 $(MUSL_BUILD)/include/bits/alltypes.h: $(MUSL_ARCH)/bits/alltypes.h.in $(MUSL_DIR)/include/alltypes.h.in $(MUSL_DIR)/tools/mkalltypes.sed
 	@mkdir -p $(@D)
@@ -86,9 +86,14 @@ $(MUSL_A): $(MUSL_OBJS)
 
 # The OS layer compiles against musl's internal headers (the thread-pointer
 # setup touches struct pthread), with musl's own flags.
-$(MUSL_BUILD)/luaw-sys.o: port/luaw-sys.c $(MUSL_ARCH)/pthread_arch.h $(MUSL_ARCH)/syscall_arch.h | $(MUSL_GENH)
+$(MUSL_BUILD)/luaw-sys.o: port/luaw-sys.c port/luaw-sys.h $(MUSL_ARCH)/pthread_arch.h $(MUSL_ARCH)/syscall_arch.h | $(MUSL_GENH)
 	@mkdir -p $(@D)
-	$(WASM_CC) $(MUSL_CFLAGS) -Wall -c $< -o $@
+	$(WASM_CC) $(MUSL_CFLAGS) -Iport -Wall -c $< -o $@
+
+# The filesystem needs only the public headers.
+$(MUSL_BUILD)/luaw-fs.o: port/luaw-fs.c port/luaw-sys.h | $(MUSL_GENH)
+	@mkdir -p $(@D)
+	$(WASM_CC) --target=wasm32-freestanding $(MUSL_SYSINC) -Iport -std=c99 -D_GNU_SOURCE -O2 -Wall -c $< -o $@
 
 $(MUSL_BUILD)/luaw-crt.o: port/luaw-crt.c
 	@mkdir -p $(@D)

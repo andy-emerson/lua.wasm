@@ -11,13 +11,16 @@
 **   read(ptr, maxlen) -> n     stdin bytes, 0 at end of input
 **
 ** Everything else is answered here the way Linux answers a process that
-** has no filesystem, no other processes and one thread: the same errno
-** values, so Lua on lua.wasm behaves as Lua 5.4.8 on musl Linux does on
-** such a machine. Design: doc/history/browser-native-2026-10-13.md.
+** has an in-memory filesystem (luaw-fs.c), no other processes and one
+** thread: the same errno values, so Lua on lua.wasm behaves as Lua 5.4.8
+** on musl Linux does on such a machine. Design:
+** doc/history/browser-native-2026-10-13.md.
 */
 #include "pthread_impl.h"
 #include "libc.h"
+#include "luaw-sys.h"
 #include <errno.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -85,7 +88,8 @@ static void pg_mark(uint32_t i, uint32_t n, int v) {
   }
 }
 
-static long map_anon(unsigned long len) {
+long luaw_map_anon(unsigned long len) {
+  if (!heap_top) heap_top = (uintptr_t)&__heap_base;
   if (len == 0 || len > 0x7fff0000ul) return -ENOMEM;
   uint32_t n = (uint32_t)((len + PG - 1) / PG);
   if (!pg_managed) {                    /* everything below the heap is taken */
@@ -118,7 +122,7 @@ static long map_anon(unsigned long len) {
   return (long)(i * PG);
 }
 
-static void unmap_anon(long addr, unsigned long len) {
+void luaw_unmap_anon(long addr, unsigned long len) {
   uint32_t i = (uint32_t)addr / PG, n = (uint32_t)((len + PG - 1) / PG);
   if (i + n <= pg_managed) pg_mark(i, n, 0);
 }
@@ -141,66 +145,78 @@ static void fill_timespec(long clk, void *out) {
 }
 
 /* ── the dispatcher ─────────────────────────────────────────────── */
-static int is_stdio(long fd) { return fd >= 0 && fd <= 2; }
+static int is_tty(long fd) { return fd >= 0 && fd <= 2; }
+
+static long tty_write(long fd, const void *buf, size_t n) {
+  if (fd != 1 && fd != 2) return -EBADF;
+  if (n) luaw_host_write((int)fd, buf, (int)n);
+  return (long)n;
+}
+
+static long tty_read(long fd, void *buf, size_t n) {
+  if (fd != 0) return -EBADF;
+  return n ? luaw_host_read(buf, (int)n) : 0;
+}
 
 long __luaw_syscall(long n, long a, long b, long c, long d, long e, long f) {
-  (void)e; (void)f;
-  if (!heap_top) heap_top = (uintptr_t)&__heap_base;
+  (void)f;
   switch (n) {
 
-  /* stdio: fds 0, 1, 2 are a terminal (line-buffered stdout, in order
-     with stderr); nothing else is open */
+  /* descriptors: 0, 1, 2 are a terminal (line-buffered stdout, in order
+     with stderr); 3 and up are the filesystem's */
   case SYS_write:
-    if (a != 1 && a != 2) return -EBADF;
-    luaw_host_write((int)a, (const void *)b, (int)c);
-    return c;
-  case SYS_writev: {
-    const struct iovec *v = (const struct iovec *)b;
-    long total = 0;
-    if (a != 1 && a != 2) return -EBADF;
-    for (long i = 0; i < c; i++) {
-      if (v[i].iov_len) luaw_host_write((int)a, v[i].iov_base, (int)v[i].iov_len);
-      total += (long)v[i].iov_len;
-    }
-    return total;
-  }
+    return is_tty(a) ? tty_write(a, (const void *)b, (size_t)c)
+                     : luaw_fs_write((int)a, (const void *)b, (size_t)c);
   case SYS_read:
-    if (a != 0) return -EBADF;
-    return luaw_host_read((void *)b, (int)c);
-  case SYS_readv: {
+    return is_tty(a) ? tty_read(a, (void *)b, (size_t)c)
+                     : luaw_fs_read((int)a, (void *)b, (size_t)c);
+  case SYS_writev: case SYS_readv: {
     const struct iovec *v = (const struct iovec *)b;
     long total = 0;
-    if (a != 0) return -EBADF;
     for (long i = 0; i < c; i++) {
+      long r;
       if (!v[i].iov_len) continue;
-      int got = luaw_host_read(v[i].iov_base, (int)v[i].iov_len);
-      total += got;
-      if (got < (int)v[i].iov_len) break;
+      if (n == SYS_writev)
+        r = is_tty(a) ? tty_write(a, v[i].iov_base, v[i].iov_len)
+                      : luaw_fs_write((int)a, v[i].iov_base, v[i].iov_len);
+      else
+        r = is_tty(a) ? tty_read(a, v[i].iov_base, v[i].iov_len)
+                      : luaw_fs_read((int)a, v[i].iov_base, v[i].iov_len);
+      if (r < 0) return total ? total : r;
+      total += r;
+      if ((size_t)r < v[i].iov_len) break;
     }
     return total;
   }
   case SYS_ioctl:
-    if (!is_stdio(a)) return -EBADF;
+    if (!is_tty(a)) return luaw_fs_is_open((int)a) ? -ENOTTY : -EBADF;
     if (b == TIOCGWINSZ) {              /* what isatty asks */
       struct winsize *w = (struct winsize *)c;
       w->ws_row = 24; w->ws_col = 80; w->ws_xpixel = w->ws_ypixel = 0;
       return 0;
     }
     return -ENOTTY;
-  case SYS__llseek:
-    return is_stdio(a) ? -ESPIPE : -EBADF;
+  case SYS__llseek: {                   /* (fd, off_hi, off_lo, result*, whence) */
+    long long off = ((long long)(unsigned long)b << 32) | (unsigned long)c;
+    if (is_tty(a)) return -ESPIPE;
+    return luaw_fs_llseek((int)a, off, (int)e, (long long *)d);
+  }
   case SYS_fcntl64:
-    return is_stdio(a) ? 0 : -EBADF;
+    return is_tty(a) ? 0 : luaw_fs_fcntl((int)a, (int)b, c);
   case SYS_close:
-    return is_stdio(a) ? 0 : -EBADF;
+    return is_tty(a) ? 0 : luaw_fs_close((int)a);
 
-  /* files: none yet */
+  /* paths (dirfd is always AT_FDCWD: the working directory is "/") */
   case SYS_openat:
-  case SYS_faccessat:
+    return luaw_fs_openat((const char *)b, (int)c, (unsigned)d);
+  case SYS_faccessat: case SYS_faccessat2:
+    return luaw_fs_access((const char *)b);
   case SYS_unlinkat:
+    return luaw_fs_unlink((const char *)b, (int)c);
   case SYS_renameat2:
-  case SYS_statx:
-    return -ENOENT;
+    return luaw_fs_rename((const char *)b, (const char *)d);
+  case SYS_statx:                       /* (dirfd, path, flags, mask, buf) */
+    return luaw_fs_statx((int)a, (const char *)b, (int)c, (void *)e);
 
   /* time */
   case SYS_clock_gettime64:
@@ -209,12 +225,13 @@ long __luaw_syscall(long n, long a, long b, long c, long d, long e, long f) {
 
   /* memory */
   case SYS_brk:
+    if (!heap_top) heap_top = (uintptr_t)&__heap_base;
     return (long)heap_top;              /* never moves: musl falls back to mmap */
-  case SYS_mmap2:
-    if (!(d & MAP_ANONYMOUS)) return -ENODEV;
-    return map_anon((unsigned long)b);
+  case SYS_mmap2:                       /* (addr, len, prot, flags, fd, pgoff) */
+    if (d & MAP_ANONYMOUS) return luaw_map_anon((unsigned long)b);
+    return luaw_fs_mmap((int)e, (unsigned long)b, (long long)f * 4096);
   case SYS_munmap:
-    unmap_anon(a, (unsigned long)b);
+    luaw_unmap_anon(a, (unsigned long)b);
     return 0;
   case SYS_madvise:
     return 0;

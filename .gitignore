@@ -11,3 +11,4 @@ src/lua
 src/luac
 tests/suite-prefix-bundle.lua
 build/
+lua-next.wasm
