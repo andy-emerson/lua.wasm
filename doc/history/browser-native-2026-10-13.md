@@ -158,7 +158,7 @@ Conventions settled alongside, now design:
 | **D7** | stdin | The host plays the environment: the `read` import answers with typed text, piped data or end of input (0). Stock `io.read` throughout; stock interactive `lua` works under Node through `luaw_main`. | Always-empty stdin and pre-supplied-only stdin (each hard-wires one environment into the module). |
 | **D8** | `lua.js` defaults | Closed 2026-10-13; the fifteen rows and their outcomes are in the section below. In one line: a `<script type="text/lua">` tag's terminal is the page, a JavaScript call's terminal is the console; Lua behaviour stays Lua's; every tag runs as the resident coroutine; one file, `lua.js`, with the module inlined; a JavaScript surface that is the module's own contract now and a bridge next (D11). | See the section. |
 | **D9** | Supported runtimes | Standard EH encoding only. Floors (webassembly.org feature data, `exceptionsFinal`): Chrome 137, Firefox 131, Safari 18.4, Node 24.15, Deno 2.3.2, wasmtime 47. CI: current Chromium, Firefox, WebKit; Node ≥ 24.15. | Shipping the legacy encoding too (deprecated; a documented V8 12.x host crash; untestable old Safari). Reopen if real users turn up on older devices. |
-| **D10** | How it lands | Four merges: (1) this record and vendored musl; (2) the new artifact built and tested beside today's; (3) the cutover and removals; (4) `lua.js`. *Merges 1–3 landed 2026-10-13; 4 waits on D8 (issue #52).* | One or two large merges. |
+| **D10** | How it lands | Four merges: (1) this record and vendored musl; (2) the new artifact built and tested beside today's; (3) the cutover and removals; (4) `lua.js`. *Merges 1–3 landed 2026-10-13; merge 4 built the same day on D8.* | One or two large merges. |
 
 Deferred, recorded as open work: a non-JavaScript host test (wasmtime,
 issue #53) — "runs in any wasm host" is not claimed until one exists; a
@@ -221,15 +221,21 @@ makes the contract reachable from HTML and from JavaScript.
 | 9 | `os.exit` in a page | the VM is finished: later tags refuse with "VM exited" and the status, shown as an error | a fresh VM for the next tag (discards row 5's state silently); overriding `os.exit` (not stock) |
 | 10 | long-running programs | every tag runs as the resident coroutine (`luaw_start`/`luaw_step`): a top-level `coroutine.yield()` returns to the page and resumes next animation frame; a tag that never yields runs to completion as before; one resident at a time, so a later tag waits. Observable difference from the `lua` command line, documented: inside a tag `coroutine.isyieldable()` is true | run-to-completion only (no animation without JavaScript; row 4 impossible); a `data-frame` opt-in (a yield without the flag is an error; row 4 unreliable) |
 | 11 | JavaScript surface | **(b+)**: a global `Lua` exposing the module's contract — `ready`, `run`, `start`/`step`, `files.*`, `env`, `on('print' \| 'error')`, `exitCode` — in merge 4, extended in merge 5 by a bridge: a `js` library in `lua.wasm` holding JavaScript values as handles, one new import `luaw.call` for synchronous calls, promises awaited by yielding the resident coroutine (the piece D2b could not see), exceptions converted at the boundary. (b+) is a strict superset of the merge-4 surface; nothing is undone. The bridge's design questions are D11 | tags only (every web app becomes an embedder); a deep table↔object mapping as Wasmoon's — the type-mapping scope is D11's to set |
-| 12 | how `lua.js` loads | a classic `<script src="lua.js">` (one IIFE built by `make lua-js` from the host code and the loader) **with `lua.wasm` inlined as base64**: one file, works from a `file://` page, bundler-friendly. Cost, to be measured in merge 4: ~535 KB raw against 400 + ~60, roughly a fifth more compressed, no streaming compile, no separate caching of the engine | ES module only (demands `type="module"`, no `currentScript`; a second output later if an npm user asks); a two-file form for streaming or separate caching — a few tens of milliseconds at this size; reopen if a user shows a measured need |
+| 12 | how `lua.js` loads | a classic `<script src="lua.js">` (one IIFE built by `make lua-js` from the host code and the loader) **with `lua.wasm` inlined as base64**: one file, works from a `file://` page, bundler-friendly. Cost, measured in merge 4: 561,610 bytes (173,739 brotli) against 400,903 (123,786 brotli) for the module — about 40% more compressed, twice the fifth estimated at framing — no streaming compile, no separate caching of the engine | ES module only (demands `type="module"`, no `currentScript`; a second output later if an npm user asks); a two-file form for streaming or separate caching — a few tens of milliseconds at this size; reopen if a user shows a measured need |
 | 13 | fetching `lua.wasm` | dissolved by row 12 | — |
 | 14 | local time | settled by D5: `lua.js` writes the visitor's zone file to `/etc/localtime` | — |
 | 15 | the loader's name | `lua.js`. The name is taken on npm (an unrelated 2015 transpiler, last published 2022) and on GitHub (a 2011 compiler); the file name on a page collides with nothing, releases are served by GitHub and jsDelivr, and an npm package, when merge 5 wants one, takes a scoped name with `lua.js` as its main file | `lua.wasm.js`, a coined name (one name for project and loader was the argument; the Human preferred the plain one) |
 
-Every row gets a browser test in Chromium, Firefox and WebKit; rows 4 and
-10 together are witnessed by a script that yields and fetches across
-frames; row 9 by the exit status and refusal text; row 12 by the size
-printed at build. The command-line REPL is Node-only: in a page `io.read`
+Every row has a browser test in Chromium, Firefox and WebKit
+(`scripts/lua-js-witness.mjs`, one page per row under
+`scripts/browser/pages/`); rows 4 and 10 together by a script that
+yields and fetches across frames; row 9 by the exit status and refusal
+text; row 12 by a page opened as `file://` and the size printed at
+build; row 14 under three zones against `Intl`. Learned in building:
+Lua's C `require` runs a module through `lua_call`, so the lazy path
+does its search and load in Lua to keep a module's own `require`
+yieldable; `luaw_step` now clears the last message when a program
+finishes. The command-line REPL is Node-only: in a page `io.read`
 is called from C and must return at once, so a REPL page is built on
 `Lua.run` per line, as fengari's are.
 
