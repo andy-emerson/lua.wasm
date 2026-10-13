@@ -17,6 +17,18 @@
 ** wasm EH (which no distro ships) the micro-runtime below provides the
 ** five __cxa entry points and dummy typeinfo vtables that catch(...)
 ** never inspects.
+**
+** The exception object lives in one static slot, not on the heap. At
+** most one Lua error is ever in flight: luaw_throw allocates it, the
+** unwind lands in luaw_try's handler, and that handler returns before
+** any other code runs, so the slot is free again by the time the next
+** error can be raised. (libc++abi would malloc on throw and free in
+** __cxa_end_catch; an earlier micro-runtime did the malloc and not the
+** free, and leaked ~17 bytes per caught error -- the interface witness
+** now watches linear memory across 200k caught errors.) The static
+** slot also keeps malloc out of the throw path, so an error raised
+** under memory exhaustion (LUA_ERRMEM) still reaches its handler
+** instead of trapping. Native Lua's longjmp allocates nothing either.
 */
 #include <stddef.h>
 #include <stdlib.h>
@@ -29,13 +41,19 @@ struct __luawasm_eh_header {
   void (*dtor)(void *);
 };
 
+/* the one exception in flight: header, then the thrown pointer */
+static struct {
+  struct __luawasm_eh_header header;
+  void *payload;
+} luaw_slot;
+
 void *__cxa_allocate_exception (size_t size) {
-  char *p = (char *)malloc(sizeof(struct __luawasm_eh_header) + size);
-  return p + sizeof(struct __luawasm_eh_header);
+  if (size > sizeof(luaw_slot.payload)) abort();  /* only a pointer is ever thrown */
+  return &luaw_slot.payload;
 }
 
 void __cxa_free_exception (void *obj) {
-  free((char *)obj - sizeof(struct __luawasm_eh_header));
+  (void)obj;  /* the slot is static */
 }
 
 void __cxa_throw (void *obj, void *tinfo, void (*dtor)(void *)) {

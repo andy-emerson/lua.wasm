@@ -239,6 +239,17 @@ console.log('adversarial');
   for (let s = gcvm.step(); s === 1; s = gcvm.step()) counts.push(Number(gcvm.message()));
   check('GC under allocation pressure keeps memory flat across yields (KB: ' + counts.join(' ') + ')',
         counts.length === 4 && Math.max(...counts) < 2 * Math.min(...counts) && Math.max(...counts) < 2048, counts);
+  /* collectgarbage("count") is Lua's accounting; the module's linear
+     memory is the host's. A caught error allocates nothing in native
+     Lua (longjmp) and must allocate nothing here either: the exception
+     object lives in a static slot (port/luaw-eh.cpp). The leak this
+     guards against was ~17 bytes per error, 3.5 MB per 200k. */
+  const errvm = await fresh();
+  errvm.init();
+  errvm.run('for i = 1, 1000 do pcall(error, "warm") end collectgarbage() collectgarbage()');
+  const before = errvm.memory.buffer.byteLength;
+  errvm.run('for i = 1, 200000 do pcall(error, "x") end collectgarbage() collectgarbage()');
+  eq('200k caught errors do not grow linear memory (the exception object is freed)', errvm.memory.buffer.byteLength - before, 0);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
