@@ -1,0 +1,73 @@
+<!doctype html>
+<!-- Browser host for the browser-native artifact: a plain page on a plain
+     static server (no COOP/COEP, no SharedArrayBuffer, no workers, no
+     Emscripten), driving lua.wasm through scripts/next-host.mjs -- the same
+     host the Node witnesses use. It fetches the artifact and a JSON bundle of
+     files, puts the files into the in-memory filesystem, sets the
+     environment, and runs stock lua.c (luaw_main) with the given arguments.
+       ?wasm=<url>&files=<url of {name: source}>&argv=<json array>&env=<json object>
+     window.__witness carries {done, exitCode, transcript, detected, coi} for
+     scripts/next-browser.mjs. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>lua.wasm in the browser</title>
+<style>
+  body { margin: 0; padding: 24px; background: #16141f; color: #e9e7f4;
+         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+         font-size: 13px; line-height: 1.5; }
+  #console { white-space: pre-wrap; }
+  #status { margin-top: 12px; color: #9a97b2; }
+</style>
+</head>
+<body>
+<div id="console">booting…</div>
+<div id="status"></div>
+<script type="module">
+  import { createLua } from './next-host.mjs';
+
+  const out = document.getElementById('console');
+  let transcript = '';
+  const emit = (text) => { transcript += text; if (transcript.length < 200000) out.textContent = transcript; };
+
+  const params = new URLSearchParams(location.search);
+  const wasmUrl = params.get('wasm') ?? './lua.wasm';
+  const filesUrl = params.get('files');
+  const argv = JSON.parse(params.get('argv') ?? '["lua","-v"]');
+  const env = JSON.parse(params.get('env') ?? '{}');
+
+  // The engine this page actually runs on, from the user agent (the
+  // driver's launcher type is the authoritative guard; this is the
+  // in-page cross-check).
+  const ua = navigator.userAgent;
+  const detected = /Firefox\//.test(ua) ? 'firefox'
+                 : /Chrome\//.test(ua) ? 'chromium'
+                 : /AppleWebKit\//.test(ua) ? 'webkit' : 'unknown';
+
+  window.__witness = { done: false };
+  try {
+    const [module, files] = await Promise.all([
+      WebAssembly.compileStreaming(fetch(wasmUrl)),
+      filesUrl ? fetch(filesUrl).then(r => { if (!r.ok) throw new Error(`fetch ${filesUrl}: ${r.status}`); return r.json(); }) : {},
+    ]);
+    out.textContent = '';
+    const lua = await createLua(module, { stdout: emit, stderr: t => emit(t) });
+    for (const [name, source] of Object.entries(files)) {
+      const r = lua.fs.put(name, source);
+      if (r !== 0) throw new Error(`fs.put ${name}: ${r}`);
+    }
+    for (const [k, v] of Object.entries(env)) lua.setenv(k, v);
+    const t = performance.now();
+    let exitCode;
+    try { exitCode = lua.main(argv); }
+    catch (e) { exitCode = -2; emit(`\n[trap: ${e.message}; luaw_exit_code ${lua.exitCode()}]`); }
+    const ms = Math.round(performance.now() - t);
+    document.getElementById('status').textContent = `exit ${exitCode} (${ms} ms, ${detected}, crossOriginIsolated=${self.crossOriginIsolated})`;
+    window.__witness = { done: true, exitCode, transcript, detected, ua, coi: self.crossOriginIsolated, imports: lua.imports, ms };
+  } catch (err) {
+    out.textContent = 'host error: ' + (err && err.message ? err.message : err);
+    window.__witness = { done: true, exitCode: -1, transcript: 'host error: ' + err, detected, ua, coi: self.crossOriginIsolated };
+  }
+</script>
+</body>
+</html>
