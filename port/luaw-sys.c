@@ -130,18 +130,32 @@ void luaw_unmap_anon(long addr, unsigned long len) {
 /* ── time ───────────────────────────────────────────────────────────
 ** One clock from the host. CLOCK_REALTIME is it; the monotonic and
 ** CPU-time clocks (os.clock) count from the first call, so they start
-** near zero and only go up, as on a fresh process. */
-static double clock_origin = -1;
+** near zero and only go up, as on a fresh process.
+**
+** No two reads return the same instant: a kernel clock has nanosecond
+** resolution and musl relies on that (its temporary-file names are
+** derived from the clock alone; mkstemp retries on collision), but a
+** host clock can be coarse -- Firefox rounds its timers to a
+** millisecond -- so a read that would repeat the previous one is
+** advanced by a nanosecond instead. */
+static long long clock_origin = -1;
+static long long last_ns = -1;
 
 static void fill_timespec(long clk, void *out) {
   struct { long long sec; long nsec; } *ts = out;   /* musl's 64-bit timespec */
+  /* integer nanoseconds: ms since the epoch is ~1.7e12, so ms * 1e6 as a
+     double would lose the low nanoseconds; split first */
   double ms = luaw_host_now();
+  long long sec = (long long)(ms / 1000.0);
+  long long ns = sec * 1000000000LL + (long long)((ms - (double)sec * 1000.0) * 1e6);
+  if (ns <= last_ns) ns = last_ns + 1;
+  last_ns = ns;
   if (clk != CLOCK_REALTIME) {
-    if (clock_origin < 0) clock_origin = ms;
-    ms -= clock_origin;
+    if (clock_origin < 0) clock_origin = ns;
+    ns -= clock_origin;
   }
-  ts->sec = (long long)(ms / 1000);
-  ts->nsec = (long)((ms - (double)ts->sec * 1000.0) * 1e6);
+  ts->sec = ns / 1000000000LL;
+  ts->nsec = (long)(ns % 1000000000LL);
 }
 
 /* ── the dispatcher ─────────────────────────────────────────────── */

@@ -9,11 +9,14 @@
 //   const lua = await createLua(moduleOrBytes, { stdout, stderr, stdin, now });
 //   lua.init(); lua.run('print(1)');
 //
-// Options: stdout(text), stderr(text) receive output as it is produced
-// (decoded as a UTF-8 stream, so a multi-byte character split across two
-// writes still decodes). stdin is a string or Uint8Array handed to Lua's
-// reads until exhausted, then end of input. now() returns ms since the
-// epoch (default: the sub-millisecond performance clock).
+// Options: stdout(text), stderr(text) receive output as it is produced,
+// decoded as a UTF-8 stream (a multi-byte character split across two
+// writes still decodes; bytes that are not UTF-8 become U+FFFD). A host
+// that must pass bytes through unchanged -- a command line, a file --
+// gives stdoutBytes(Uint8Array) / stderrBytes(Uint8Array) instead. stdin
+// is a string or Uint8Array handed to Lua's reads until exhausted, then
+// end of input. now() returns ms since the epoch (default: the
+// sub-millisecond performance clock).
 
 const enc = new TextEncoder();
 
@@ -25,8 +28,13 @@ export async function createLua(source, opts = {}) {
     luaw: {
       write: (fd, ptr, len) => {
         const bytes = new Uint8Array(memory.buffer, ptr, len);
-        if (fd === 2) opts.stderr?.(errDec.decode(bytes, { stream: true }));
-        else opts.stdout?.(outDec.decode(bytes, { stream: true }));
+        if (fd === 2) {
+          if (opts.stderrBytes) opts.stderrBytes(bytes.slice());
+          else opts.stderr?.(errDec.decode(bytes, { stream: true }));
+        } else {
+          if (opts.stdoutBytes) opts.stdoutBytes(bytes.slice());
+          else opts.stdout?.(outDec.decode(bytes, { stream: true }));
+        }
       },
       now: opts.now ?? (() => performance.timeOrigin + performance.now()),
       read: (ptr, maxlen) => {

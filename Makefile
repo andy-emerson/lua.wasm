@@ -286,6 +286,24 @@ $(WASM_NEXT_O): $(MUSL_BUILD)/onelua-next.o $(MUSL_RT) $(MUSL_A)
 
 wasm-next: $(WASM_NEXT_O)
 
+# The oracle for the differential test (scripts/next-differential.sh):
+# stock Lua 5.4.8 built natively for x86_64-linux-musl against the SAME
+# vendored musl the artifact uses, statically linked, same feature set
+# (-DLUA_USE_LINUX). zig's bundled x86_64 musl is the build's libc; the
+# oracle's point is behaviour, and musl 1.2.6 is what both compile against
+# for the public API. Needs a zig-based WASM_CC; see the Makefile header.
+NATIVE_MUSL_CC?= python3 -m ziglang cc
+NATIVE_MUSL_LUA= build/lua-musl
+$(NATIVE_MUSL_LUA): src/onelua.c
+	@mkdir -p $(@D)
+	$(NATIVE_MUSL_CC) -target x86_64-linux-musl -static -O2 -DLUA_USE_LINUX -DMAKE_LUA -Isrc -o $@ src/onelua.c -lm
+lua-musl: $(NATIVE_MUSL_LUA)
+
+# The differential witness: the corpus in port/test/diff on the artifact
+# and on the oracle, stdout, stderr and exit status compared byte for byte.
+next-differential: $(WASM_NEXT_O) $(NATIVE_MUSL_LUA)
+	sh scripts/next-differential.sh $(WASM_NEXT_O) $(NATIVE_MUSL_LUA)
+
 # list targets that do not create files (but not all makes understand .PHONY)
 .PHONY: all $(PLATS) clean test install uninstall local none dummy echo pc wasm liblua.a wasm-next
 

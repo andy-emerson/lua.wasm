@@ -83,6 +83,12 @@ console.log('the clock');
   lua2.init();
   lua2.run('local a = os.clock() local b = os.clock() print(b > a, b - a)');
   eq('os.clock advances with now() (relative, seconds)', lua2.take().stdout, 'true\t0.25\n');
+  /* a coarse host clock (Firefox rounds timers to 1 ms) must not repeat
+     an instant: musl derives temp-file names from the clock alone */
+  const frozen = await fresh({ now: () => t0 });
+  frozen.init();
+  frozen.run('local seen, n = {}, 0 for i = 1, 300 do local f = io.tmpfile() f:close() local name = os.tmpname() assert(not seen[name], name) seen[name] = true os.remove(name) n = n + 1 end print(n)');
+  eq('300 os.tmpname/io.tmpfile with a frozen now(): all distinct, none failing', [frozen.lastError(), frozen.take().stdout], [null, '300\n']);
 }
 
 console.log('files');
