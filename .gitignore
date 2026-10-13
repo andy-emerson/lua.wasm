@@ -10,3 +10,4 @@ lua_tmp_*
 src/lua
 src/luac
 tests/suite-prefix-bundle.lua
+build/

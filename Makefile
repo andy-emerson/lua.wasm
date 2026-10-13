@@ -256,6 +256,12 @@ liblua.a:
 	cp $(LUA_PUB_HEADERS) $(LUA_INCDIR)/
 	@echo "built $(LUA_A) + public headers in $(LUA_INCDIR)/ for wasm32-wasi"
 
+# ── The C library for the browser-native artifact: upstream musl ──────────
+# Rules in port/musl.mk (vendored tree in third_party/musl, arch in
+# port/wasm32, the OS under it in port/luaw-sys.c). `make musl-libc`
+# builds build/musl/libc.a; the artifact targets that use it follow.
+include port/musl.mk
+
 # list targets that do not create files (but not all makes understand .PHONY)
 .PHONY: all $(PLATS) clean test install uninstall local none dummy echo pc wasm liblua.a
 
