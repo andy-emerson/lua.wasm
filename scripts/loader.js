@@ -340,6 +340,7 @@
     } catch (e) { console.warn('lua.js: local time stays UTC: ' + (e && e.message ? e.message : e)); }
     const tags = Array.from(document.querySelectorAll('script[type="text/lua"]'));
     for (const tag of tags) await runTag(tag);
+    state.sink = jsSink;               // from here, output belongs to JavaScript calls
   }
 
   const ready = new Promise((resolve, reject) => {
@@ -348,8 +349,69 @@
     else go();
   });
 
+  // --- the JavaScript surface (D8 row 11): the module's own contract ----------
+  // A call from JavaScript is started from JavaScript, so its terminal is
+  // the console (row 1) unless Lua.on('print' | 'error', fn) redirects it.
+  const consoleSink = {
+    print: t => console.log(t.replace(/\n$/, '')),
+    error: t => console.error(t.replace(/\n$/, '')),
+  };
+  const jsSink = { print: consoleSink.print, error: consoleSink.error };
+  state.sink = jsSink;
+
+  const vm = () => {
+    if (!state.lua) throw new Error('lua.js: not ready yet (await Lua.ready)');
+    if (state.exited) throw new Error(`VM exited (status ${state.exitCode})`);
+    return state.lua;
+  };
+  const guarded = (f) => {
+    const lua = vm();
+    try { return f(lua); }
+    catch (e) {
+      if (e instanceof WebAssembly.RuntimeError) { state.exited = true; state.exitCode = lua.exitCode(); throw new Error(`VM exited (status ${state.exitCode})`); }
+      throw e;
+    }
+  };
+  const fail = (lua) => { throw new Error(lua.lastError()); };
+
   window.Lua = {
-    ready,
+    /* resolves (with Lua) once lua.wasm is loaded, the VM exists and the page's tags have run */
+    ready: ready.then(() => window.Lua),
+    /* run a chunk to completion; throws with the Lua message on error */
+    run: (source, name = '=(JavaScript)') => guarded(lua => { if (lua.run(source, name) !== 0) fail(lua); }),
+    /* the resident program: start it, then step it (once per frame); step
+       resolves 1 while it is alive and yielded, 0 when it finished, and
+       serves any lazy require along the way; msg reaches its yield */
+    start: (source, name = '=(program)') => guarded(lua => { if (lua.start(source, name) !== 0) fail(lua); }),
+    step: async (msg = null) => {
+      let answer = msg;
+      for (;;) {
+        const s = guarded(lua => lua.step(answer));
+        if (s !== LUA_YIELD) { if (s !== 0) fail(state.lua); return 0; }
+        const m = state.lua.message();
+        if (m === null || !m.startsWith(FETCH)) return 1;
+        try { await fetchModule(m.slice(FETCH.length)); answer = 'ok'; }
+        catch (e) { answer = e.message; }
+      }
+    },
+    /* what the program yielded on the last step, or null */
+    get message() { return state.lua ? state.lua.message() : null; },
+    /* the in-memory filesystem; put takes a string or bytes, get returns bytes */
+    files: {
+      put: (path, data) => guarded(lua => { const r = lua.fs.put(path, data); if (r !== 0) throw new Error(`put ${path}: ${r}`); }),
+      get: (path) => guarded(lua => lua.fs.get(path)),
+      getText: (path) => guarded(lua => lua.fs.getText(path)),
+      list: () => guarded(lua => lua.fs.list()),
+      remove: (path) => guarded(lua => lua.fs.remove(path)),
+      mkdir: (path) => guarded(lua => lua.fs.mkdir(path)),
+    },
+    /* set (or, with null, remove) an environment variable */
+    env: (name, value) => guarded(lua => lua.setenv(name, value)),
+    /* where output and errors of JavaScript calls go; null restores the console */
+    on: (event, fn) => {
+      if (event !== 'print' && event !== 'error') throw new Error(`lua.js: unknown event ${event}`);
+      jsSink[event] = fn ?? consoleSink[event];
+    },
     get exitCode() { return state.exitCode; },
   };
 })();

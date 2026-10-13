@@ -108,6 +108,18 @@ const cases = [
     }, p.zone);
     eq(`os.date/os.time under ${p.zone} agree with Intl (summer, winter, southern summer, beyond the window)`, (await p.outputs())[0], want);
   }],
+  ['jsapi', async (p) => {
+    await p.page.waitForFunction(() => window.__api && window.__api.done, null, { timeout: 60_000 });
+    const r = await p.page.evaluate(() => window.__api);
+    check('the page script ran to the end', !r.error, r.error);
+    check('Lua.run from JavaScript prints to the console and sees the tags\' state', p.console.log.includes('to the console\tset by the tag'), p.console.log);
+    eq('Lua.run throws with the Lua message', r.thrown, 'mine:1: from js');
+    eq('Lua.on(\'print\') redirects, null restores', r.redirected.join(''), 'ab\n');
+    eq('files: put, read by Lua, written by Lua, get, list', [r.fileRound, r.listed], ['HELLO FILE', ['/data/in.txt', '/out.txt']]);
+    eq('env reaches os.getenv', r.envseen, 'hi\n');
+    eq('start/step: a lazy require is served, a message each way, finish', r.steps, [[1, 'ready hello js (deep)'], [1, 'got reply'], [0, null]]);
+    eq('os.exit through Lua.run throws, records, and later calls refuse', [r.exit, r.afterExit], [['VM exited (status 9)', 9], 'VM exited (status 9)']);
+  }],
   ['yield', async (p) => {
     eq('a yielding tag resumes each frame and finishes; the next tag waits', await p.outputs(), ['frame 1\nframe 2\nframe 3\nframe 4\nframe 5\ndone\n', 'second tag ran after\n']);
     const frames = await p.page.evaluate(() => window.__raf);

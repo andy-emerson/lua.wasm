@@ -209,7 +209,7 @@ console.log('the resident program and the message channel');
   eq('step 5: no program -> LUA_ERRRUN with the reason', [lua.step(), lua.lastError()], [2, 'no resident program (luaw_start first)']);
   eq('luaw_start of a bad chunk returns LUA_ERRSYNTAX', [lua.start('x = = 1', '=p'), lua.lastError()], [3, "p:1: unexpected symbol near '='"]);
   eq('a program that errors mid-flight: status 2, message, program released', (lua.start('coroutine.yield("alive") error("died")'), [lua.step(), lua.message(), lua.step(), lua.lastError(), lua.step()]), [1, 'alive', 2, '(program):1: died', 2]);
-  eq('a replacement program starts clean', (lua.start('coroutine.yield("new") return 1'), [lua.step(), lua.message(), lua.step()]), [1, 'new', 0]);
+  eq('a replacement program starts clean; finishing clears the last message', (lua.start('coroutine.yield("new") return 1'), [lua.step(), lua.message(), lua.step(), lua.message()]), [1, 'new', 0, null]);
   eq('a message with embedded NUL round-trips', (lua.start('local m = ... coroutine.yield(#m .. ":" .. m)'), lua.step('a\0b'), lua.message()), '3:a\0b');
 }
 
