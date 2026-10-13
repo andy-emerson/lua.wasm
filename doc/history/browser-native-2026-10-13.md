@@ -156,14 +156,15 @@ Conventions settled alongside, now design:
 | **D5** | Local time, environment | musl's stock handling: `TZ` or `/etc/localtime`, else UTC. The environment starts empty; hosts add to it with `luaw_setenv`. `lua.js` will generate the visitor's zone file from the browser's own rules (merge 4); until then hosts supply `TZ` or a zone file. Needs file-backed `mmap` in the syscall layer (musl memory-maps zone files). | A time-zone import (modifies musl); shipping the tz database (size, upkeep). |
 | **D6** | Removals | `lua-lib.wasm` as a separate artifact; the WASI build and runners; the link-Lua-in shape (`liblua.a`, `examples/embed/`, `doc/embedding.md`, `WASM_EH=external`); the unused C sjlj path; the `onelua.c` WASI workarounds (`tmpnam`, `tmpfile`, `fopen("")`, `setlocale`, `system`); the legacy EH encoding (per D9). Deep-witness is retargeted, not removed. *Done in merge 3*: the removal record with each item's reopen condition is [`wasi-sunset-2026-10-13.md`](wasi-sunset-2026-10-13.md). | See the removal record. |
 | **D7** | stdin | The host plays the environment: the `read` import answers with typed text, piped data or end of input (0). Stock `io.read` throughout; stock interactive `lua` works under Node through `luaw_main`. | Always-empty stdin and pre-supplied-only stdin (each hard-wires one environment into the module). |
-| **D8** | `lua.js` defaults | **Open** — decided before merge 4. | |
+| **D8** | `lua.js` defaults | Closed 2026-10-13; the fifteen rows and their outcomes are in the section below. In one line: a `<script type="text/lua">` tag's terminal is the page, a JavaScript call's terminal is the console; Lua behaviour stays Lua's; every tag runs as the resident coroutine; one file, `lua.js`, with the module inlined; a JavaScript surface that is the module's own contract now and a bridge next (D11). | See the section. |
 | **D9** | Supported runtimes | Standard EH encoding only. Floors (webassembly.org feature data, `exceptionsFinal`): Chrome 137, Firefox 131, Safari 18.4, Node 24.15, Deno 2.3.2, wasmtime 47. CI: current Chromium, Firefox, WebKit; Node ≥ 24.15. | Shipping the legacy encoding too (deprecated; a documented V8 12.x host crash; untestable old Safari). Reopen if real users turn up on older devices. |
 | **D10** | How it lands | Four merges: (1) this record and vendored musl; (2) the new artifact built and tested beside today's; (3) the cutover and removals; (4) `lua.js`. *Merges 1–3 landed 2026-10-13; 4 waits on D8 (issue #52).* | One or two large merges. |
 
 Deferred, recorded as open work: a non-JavaScript host test (wasmtime,
-issue #53) — "runs in any wasm host" is not claimed until one exists; D8
-(issue #52); a reproducible benchmark against Wasmoon in the repo (issue
-#54; the numbers above are session observations).
+issue #53) — "runs in any wasm host" is not claimed until one exists; a
+reproducible benchmark against Wasmoon in the repo (issue #54; the
+numbers above are session observations); **D11**, the JavaScript bridge
+(below), which gates merge 5.
 
 ## Post-merge review (2026-10-13, after merges 1–3)
 
@@ -187,6 +188,63 @@ rejected options; the Human kept all but three, reopened here and closed:
   0.15.1 hands clang `-O2` for `-O1`, `-O2` and `-O3` alike (objects
   byte-identical), so the spike numbers above were `-O2` builds and the
   Makefile's `-O2` is the only level the toolchain offers.
+
+## D8 closed: `lua.js` (2026-10-13)
+
+The survey was re-checked before closing: PyScript (`<script type="py">`:
+`src`, a config for files, output to the page, a shared interpreter,
+document order, a worker opt-in), fengari-web (`<script
+type="application/lua">`, `print` to the console, Lua 5.3 rewritten in
+JavaScript, a bridge via fengari-interop, one file, last release 2022) and
+Wasmoon (a JavaScript API with an object bridge and promise await, no
+script tag, two files — `index.js` fetches `glue.wasm` — Emscripten,
+`print` bound to `console.log`). Nothing serves "stock Lua in HTML with no
+JavaScript" with 5.4, a real libc, page output, files or a frame model.
+
+Three principles decided the rows. **The entry point is the terminal:** a
+program's output and errors go where it was started from — a script tag's
+terminal is the page, a JavaScript call's is the console. **Lua behaviour
+stays Lua's:** `lua.js` chooses where bytes go and when they arrive, never
+what a program sees. **`lua.js` adds no capability `lua.wasm` lacks;** it
+makes the contract reachable from HTML and from JavaScript.
+
+| # | question | decision | rejected (reopen when) |
+|---|---|---|---|
+| 1 | where `print` goes | the page, as text where the tag sits, for a script tag; the console for a JavaScript call (`Lua.run`); `data-output` redirects | console only (fengari's choice; "nothing happened" for a beginner) |
+| 2 | where errors go | with the program's output (stderr and stdout share a terminal), plus `console.error` | console only — splits an error from the output it interrupted |
+| 3 | `src="main.lua"` | supported; loaded with `fetch`, so it needs the same origin (or CORS) and does not work from a `file://` page — documented | not supported (nothing gained; `data-files` has the same limits) |
+| 4 | files a script needs | lazy `require` by yield: `lua.js` wraps `require` in Lua; a missing module yields `fetch <name>` through the message channel, the page fetches it into the filesystem and resumes; `data-files="..."` lists files explicitly (data, or a `require` inside a C callback, which cannot yield) | JSPI (Chrome only); synchronous XHR (deprecated); a page-level manifest (later if (a) is outgrown); bundling tools (later) |
+| 5 | one Lua state per page | one shared state: tags are chunks in one state, as `dofile` twice at one prompt; chunk locals are already private | a fresh state per tag (like separate processes; adds nothing JavaScript cannot do; breaks `os.exit` and shared files) |
+| 6 | when tags run | after the page has loaded, in document order (nothing can run before `lua.wasm` is compiled anyway); `Lua.run` from JavaScript runs when called | as parsed (not physically available for tags) |
+| 7 | stdin | `data-stdin="..."` text, then end of input; absent, end of input; `data-stdin="prompt"` opts into `window.prompt` (Emscripten's default, which Wasmoon inherits) | the pop-up by default (a surprise modal) |
+| 8 | where `lua.wasm` is found | dissolved: the module is inlined in `lua.js` (row 12) | — |
+| 9 | `os.exit` in a page | the VM is finished: later tags refuse with "VM exited" and the status, shown as an error | a fresh VM for the next tag (discards row 5's state silently); overriding `os.exit` (not stock) |
+| 10 | long-running programs | every tag runs as the resident coroutine (`luaw_start`/`luaw_step`): a top-level `coroutine.yield()` returns to the page and resumes next animation frame; a tag that never yields runs to completion as before; one resident at a time, so a later tag waits. Observable difference from the `lua` command line, documented: inside a tag `coroutine.isyieldable()` is true | run-to-completion only (no animation without JavaScript; row 4 impossible); a `data-frame` opt-in (a yield without the flag is an error; row 4 unreliable) |
+| 11 | JavaScript surface | **(b+)**: a global `Lua` exposing the module's contract — `ready`, `run`, `start`/`step`, `files.*`, `env`, `on('print' \| 'error')`, `exitCode` — in merge 4, extended in merge 5 by a bridge: a `js` library in `lua.wasm` holding JavaScript values as handles, one new import `luaw.call` for synchronous calls, promises awaited by yielding the resident coroutine (the piece D2b could not see), exceptions converted at the boundary. (b+) is a strict superset of the merge-4 surface; nothing is undone. The bridge's design questions are D11 | tags only (every web app becomes an embedder); a deep table↔object mapping as Wasmoon's — the type-mapping scope is D11's to set |
+| 12 | how `lua.js` loads | a classic `<script src="lua.js">` (one IIFE built by `make lua-js` from the host code and the loader) **with `lua.wasm` inlined as base64**: one file, works from a `file://` page, bundler-friendly. Cost, to be measured in merge 4: ~535 KB raw against 400 + ~60, roughly a fifth more compressed, no streaming compile, no separate caching of the engine | ES module only (demands `type="module"`, no `currentScript`; a second output later if an npm user asks); a two-file form for streaming or separate caching — a few tens of milliseconds at this size; reopen if a user shows a measured need |
+| 13 | fetching `lua.wasm` | dissolved by row 12 | — |
+| 14 | local time | settled by D5: `lua.js` writes the visitor's zone file to `/etc/localtime` | — |
+| 15 | the loader's name | `lua.js`. The name is taken on npm (an unrelated 2015 transpiler, last published 2022) and on GitHub (a 2011 compiler); the file name on a page collides with nothing, releases are served by GitHub and jsDelivr, and an npm package, when merge 5 wants one, takes a scoped name with `lua.js` as its main file | `lua.wasm.js`, a coined name (one name for project and loader was the argument; the Human preferred the plain one) |
+
+Every row gets a browser test in Chromium, Firefox and WebKit; rows 4 and
+10 together are witnessed by a script that yields and fetches across
+frames; row 9 by the exit status and refusal text; row 12 by the size
+printed at build. The command-line REPL is Node-only: in a page `io.read`
+is called from C and must return at once, so a REPL page is built on
+`Lua.run` per line, as fengari's are.
+
+**D11 — the JavaScript bridge (open; gates merge 5).** Four questions,
+each freezing semantics: handle lifetimes (a JavaScript value held by Lua
+is released by `__gc`; a Lua value held by JavaScript by
+`FinalizationRegistry` — fengari gets leak-freedom for free, we must earn
+it); type mapping (strings, numbers, booleans, `nil`/`null`/`undefined`,
+and whether tables and arrays cross by copy or by handle); exceptions
+crossing (a JavaScript exception thrown inside an import unwinds through
+the micro-runtime's `catch(...)`, which today would mistake it for a Lua
+error); and whether the `js` library is always in `lua.wasm` or an
+optional build. The use-case table that framed it (fengari's and Wasmoon's
+uses, parity and out-performing needs per row) is in issue #58. Packaging
+beyond the one file — npm, an ES-module output — is decided with it.
 
 ## What this does not change
 
