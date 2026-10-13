@@ -16,15 +16,10 @@
 // documents. The artifact itself is unmodified musl behaviour.
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { createLua } from './next-host.mjs';
+import { createLua, LOCALE_PRELUDE } from './next-host.mjs';
 
 const [file, dir = 'tests'] = process.argv.slice(2);
 if (!file) { console.error('usage: node scripts/next-suite.mjs <lua.wasm> [tests-dir]'); process.exit(2); }
-
-export const LOCALE_PRELUDE =
-  "do local sl = os.setlocale os.setlocale = function (l, c) " +
-  "if l ~= nil and l ~= '' and l ~= 'C' and l ~= 'POSIX' then return nil end " +
-  "return sl(l, c) end end";
 
 let sawFinalOK = false, tail = '';
 const lua = await createLua(readFileSync(file), {

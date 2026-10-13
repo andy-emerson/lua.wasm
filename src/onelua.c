@@ -348,9 +348,12 @@ static void luaw_ltests_openlibs (lua_State *L) {
 /*
 ** ── The embedding interface ─────────────────────────────────────────
 ** MAKE_REACTOR wasm builds are reactors: the host calls in, the VM
-** returns. The host interface is WASI (stdio, filesystem, clock --
-** print() arrives at the host as fd_write on fd 1) plus the exports
-** below, and nothing else.
+** returns. The host interface is the exports below plus what the libc
+** underneath imports: on the musl build (-DLUAW_MUSL, the browser-native
+** artifact) the three luaw imports of port/luaw-sys.c -- write, now,
+** read -- and nothing else; on the WASI build, until the cutover, WASI
+** (stdio, filesystem, clock -- print() arrives at the host as fd_write
+** on fd 1).
 **
 ** This glue is opt-in (-DMAKE_REACTOR, set by the Makefile's wasm-lib
 ** target), NOT implied by MAKE_LIB. A downstream that links Lua into

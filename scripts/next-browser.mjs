@@ -31,12 +31,9 @@ import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
-const here = dirname(fileURLToPath(import.meta.url));
+import { LOCALE_PRELUDE } from './next-host.mjs';
 
-const LOCALE_PRELUDE =
-  "do local sl = os.setlocale os.setlocale = function (l, c) " +
-  "if l ~= nil and l ~= '' and l ~= 'C' and l ~= 'POSIX' then return nil end " +
-  "return sl(l, c) end end";
+const here = dirname(fileURLToPath(import.meta.url));
 
 // --- args ---------------------------------------------------------------------
 const argv = process.argv.slice(2);

@@ -323,6 +323,6 @@ next-differential: $(WASM_NEXT_O) $(NATIVE_MUSL_LUA)
 	sh scripts/next-differential.sh $(WASM_NEXT_O) $(NATIVE_MUSL_LUA)
 
 # list targets that do not create files (but not all makes understand .PHONY)
-.PHONY: all $(PLATS) clean test install uninstall local none dummy echo pc wasm liblua.a wasm-next
+.PHONY: all $(PLATS) clean test install uninstall local none dummy echo pc wasm liblua.a wasm-next lua-musl next-differential
 
 # (end of Makefile)

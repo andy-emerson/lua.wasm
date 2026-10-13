@@ -20,6 +20,18 @@
 
 const enc = new TextEncoder();
 
+// The one test-setup adaptation the official suite needs on musl, as Lua
+// source for LUA_INIT (stock lua.c runs it before the script): musl answers
+// os.setlocale("pt_BR") with "pt_BR" but implements no locale-specific
+// numeric formatting, and literals.lua asserts the decimal point changed
+// after a successful setlocale -- native Lua on musl fails that assert too.
+// The prelude tells the suite the locale is unavailable; the artifact is
+// unmodified musl behaviour. scripts/suite-bundle.py carries the same text.
+export const LOCALE_PRELUDE =
+  "do local sl = os.setlocale os.setlocale = function (l, c) " +
+  "if l ~= nil and l ~= '' and l ~= 'C' and l ~= 'POSIX' then return nil end " +
+  "return sl(l, c) end end";
+
 export async function createLua(source, opts = {}) {
   const outDec = new TextDecoder(), errDec = new TextDecoder();
   let stdin = typeof opts.stdin === 'string' ? enc.encode(opts.stdin) : (opts.stdin ?? new Uint8Array());
