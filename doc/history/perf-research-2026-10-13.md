@@ -39,7 +39,7 @@ of what it decided.
 
 ## Open
 
-- The remaining `fib` gap to Wasmoon (0.87× Chromium, 0.88× WebKit). The interpreter is the same; the candidates left are the allocator (not exercised by `fib`), the link (Emscripten's `-O3` + `wasm-opt` pipeline against ours), and codegen differences between clang 20 under zig and Emscripten's clang, which a function-by-function diff of the two VM loops would settle.
+- The remaining `fib` gap to Wasmoon (0.87× Chromium, 0.88× WebKit) is unexplained. What it is not: the interpreter source (verbatim in both), the optimizer level (`-O2`/`-O3`/`-Os` within 1%), the compiler driver (zig hands clang `-O2`, objects byte-identical), Binaryen's inlining limits (swept, neutral), or EH landing pads in the loop (fixed this round; it was the cause of the larger baseline gap). The allocator is not in play: `fib` allocates nothing. The unexamined evidence is the compiled output: a side-by-side of `luaV_execute` and the call path in the two modules would show whether the difference is instruction selection, inlining decisions or Emscripten's `wasm-opt` pass list, and either name a flag or close the question.
 - A reproducer and bug report for SpiderMonkey's throw cost.
 - Per-phase start-up timing (decode, compile, instantiate, `_initialize`, the zone file, the first tag) — no published numbers exist for 300–600 KB modules; ours would be first.
 - The allocator comparison the literature lacks, on our own harness, if a workload ever shows the allocator.
