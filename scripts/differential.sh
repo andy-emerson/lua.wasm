@@ -1,13 +1,13 @@
 #!/bin/sh
-# next-differential.sh -- the differential witness: every script in the
-# corpus runs on the browser-native artifact (scripts/next-run.mjs, under
+# differential.sh -- the differential witness: every script in the
+# corpus runs on lua.wasm (scripts/lua.mjs, under
 # Node) and on the oracle, stock Lua 5.4.8 built natively for musl
-# (`make lua-musl`), and stdout, stderr and the exit status must be
+# (`make oracle`), and stdout, stderr and the exit status must be
 # byte-identical. The reference behaviour is "Lua 5.4.8 on musl Linux,
 # bugs included" (doc/history/browser-native-2026-10-13.md); any
 # difference is a bug in the port.
 #
-#   sh scripts/next-differential.sh <lua.wasm> <native-lua> [corpus-dir]
+#   sh scripts/differential.sh <lua.wasm> <native-lua> [corpus-dir]
 #
 # Both sides see the same world: a working directory holding the script
 # as t.lua (so chunk names and messages match) and an empty data/
@@ -49,7 +49,7 @@ for script in "$CORPUS"/*.lua; do
      python3 -c 'import os, sys; os.execv(sys.argv[1], ["lua"] + sys.argv[2:])' "$NATIVE" t.lua one two \
      > "$work/$name.native.out" 2> "$work/$name.native.err"; echo $? > "$work/$name.native.rc")
   # the artifact: the prepared directory mirrored into the in-memory filesystem
-  printf '%s' "$STDIN_TEXT" | node --experimental-wasm-exnref "$ROOT/scripts/next-run.mjs" "$WASM" \
+  printf '%s' "$STDIN_TEXT" | node --experimental-wasm-exnref "$ROOT/scripts/lua.mjs" "$WASM" \
      --dir "$work/stage" --env TZ="$ENV_TZ" --env PATH=/usr/bin:/bin -- t.lua one two \
      > "$work/$name.wasm.out" 2> "$work/$name.wasm.err"; echo $? > "$work/$name.wasm.rc"
   set -e

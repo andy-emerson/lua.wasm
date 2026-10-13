@@ -1,13 +1,13 @@
-// next-run.mjs -- the `lua` command line on the browser-native artifact,
+// lua.mjs -- the `lua` command line on lua.wasm,
 // under Node: stock lua.c (luaw_main) with the process's stdin, stdout,
 // stderr and exit status, and a host directory mirrored into the
 // in-memory filesystem.
 //
-//   node scripts/next-run.mjs <lua.wasm> [--dir <host-dir>] [--env K=V]... \
+//   node scripts/lua.mjs <lua.wasm> [--dir <host-dir>] [--env K=V]... \
 //        [--tz <zone-file>] -- <lua args...>
 //
-//   node scripts/next-run.mjs lua.wasm -- -e 'print(1)'
-//   node scripts/next-run.mjs lua.wasm --dir tests -- -e"_port=true" all.lua
+//   node scripts/lua.mjs lua.wasm -- -e 'print(1)'
+//   node scripts/lua.mjs lua.wasm --dir tests -- -e"_port=true" all.lua
 //
 // --dir copies every file under <host-dir> to the same relative path under
 // "/", which is the module's working directory, so relative names in Lua
@@ -15,10 +15,10 @@
 // (LUA_INIT, LUA_PATH, TZ, ...). --tz puts a zone file at /etc/localtime.
 // stdin is read whole before Lua starts (the read import answers from it;
 // a terminal's typed input is not forwarded). The differential test
-// (scripts/next-differential.sh) uses this as the wasm side.
+// (scripts/differential.sh) uses this as the wasm side.
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { createLua } from './next-host.mjs';
+import { createLua } from './host.mjs';
 
 const argv = process.argv.slice(2);
 const file = argv.shift();
@@ -32,7 +32,7 @@ while (argv.length && argv[0] !== '--') {
   else { console.error(`unknown option ${a}`); process.exit(2); }
 }
 if (argv[0] === '--') argv.shift();
-if (!file) { console.error('usage: node scripts/next-run.mjs <lua.wasm> [--dir d] [--env K=V] [--tz zonefile] -- <lua args>'); process.exit(2); }
+if (!file) { console.error('usage: node scripts/lua.mjs <lua.wasm> [--dir d] [--env K=V] [--tz zonefile] -- <lua args>'); process.exit(2); }
 
 let stdin = new Uint8Array();
 try { if (!process.stdin.isTTY) stdin = readFileSync(0); } catch { /* no stdin */ }

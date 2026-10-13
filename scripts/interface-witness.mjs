@@ -1,18 +1,18 @@
-// next-interface.mjs -- the host-interface witness for the browser-native
-// artifact: every import and export of the contract, each with the
+// interface-witness.mjs -- the host-interface witness for lua.wasm:
+// every import and export of the contract, each with the
 // behaviour the design record assigns it, plus the adversarial battery
-// the WASI reactor's stress witness ran (contained stack overflow,
+// the former WASI reactor's stress witness ran (contained stack overflow,
 // mid-flight death and replacement, a 50k-frame pump, GC under
 // allocation pressure).
 //
-//   node scripts/next-interface.mjs lua-next.wasm
+//   node scripts/interface-witness.mjs lua.wasm
 //
 // Exits 0 only if every check passes. Each check names what it asserts.
 import { readFileSync } from 'node:fs';
-import { createLua } from './next-host.mjs';
+import { createLua } from './host.mjs';
 
 const file = process.argv[2];
-if (!file) { console.error('usage: node scripts/next-interface.mjs <lua.wasm>'); process.exit(2); }
+if (!file) { console.error('usage: node scripts/interface-witness.mjs <lua.wasm>'); process.exit(2); }
 const bytes = readFileSync(file);
 const module = await WebAssembly.compile(bytes);
 

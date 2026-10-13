@@ -1,102 +1,98 @@
-// Browser witness: run a Lua script inside lua.wasm in a real browser engine
-// -- Chromium (V8), Firefox (SpiderMonkey), or WebKit (JSC family) -- and
-// assert on the transcript. This is the browser leg of the engine matrix in
-// doc/history/wasm-audit-2026-07-05.md; the suite-prefix bundle (scripts/suite-bundle.py)
-// is the intended payload, since the audit's host-crash detonated only after
-// the whole prefix ran in order.
+// browser-witness.mjs -- the browser witness:
+// run the full official Lua test suite (portable mode) through stock lua.c
+// inside lua.wasm, in a real browser engine -- Chromium (V8), Firefox
+// (SpiderMonkey) or WebKit (JSC family) -- from a plain static page, and
+// assert on the result.
 //
-//   node scripts/browser-witness.mjs <lua.wasm> <script.lua> \
-//        --engine <chromium|firefox|webkit> [--expect TEXT]
+//   node scripts/browser-witness.mjs <lua.wasm> --engine <chromium|firefox|webkit>
+//        [--tests <dir>] [--argv '<json>'] [--expect TEXT]
 //
-// --engine is REQUIRED and never defaults. A witness that silently fell back to
-// Chromium would report a V8 result under a non-V8 name, so three independent
-// guards enforce that the page actually ran on the requested engine:
-//   1. no fallback   -- a browser that will not launch fails the witness; it is
-//                       never quietly swapped for a different engine.
-//   2. launcher type -- Playwright's own browser type must equal --engine.
-//   3. runtime probe -- the page fingerprints its real engine from the
-//                       user-agent (Firefox/, Chrome/, or AppleWebKit without a
-//                       Chrome token) and must match --engine, else the witness
-//                       fails. (Capability probes such as Error.captureStackTrace
-//                       drift across engine versions -- it is no longer V8-only --
-//                       so the UA is the stable signal; guard 2 is authoritative.)
+// Defaults run the suite: the files of --tests (default tests/) are served
+// as one JSON bundle, argv is ["lua","-e","_port=true","all.lua"], the
+// environment carries the locale prelude in LUA_INIT and a PATH (see
+// scripts/suite-witness.mjs for why), and the pass condition is exit 0 plus
+// "final OK !!!" in the transcript. Any other script and argv can be given.
 //
+// The page is served with only a content-type header, and the witness
+// asserts crossOriginIsolated is false in the page: no COOP/COEP, no
+// SharedArrayBuffer, no workers are involved.
+//
+// --engine is REQUIRED and never defaults, with three guards:
+// no fallback to another engine if the
+// requested one will not launch; Playwright's launcher type must equal
+// --engine; the page's own user-agent fingerprint must equal --engine.
 // Requires playwright-core resolvable from the invoking directory and the
-// requested browser installed (npx playwright install <engine>). An installed
-// browser may be overridden per-engine via CHROMIUM=/FIREFOX=/WEBKIT=<path>;
-// each var applies ONLY to its own engine, so it can never cross-wire.
-// Adapted from love-wasi's wasi/host/browser-witness.mjs.
+// browser installed (npx playwright install <engine>); CHROMIUM=/FIREFOX=/
+// WEBKIT=<path> override the executable for their own engine only.
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
+import { LOCALE_PRELUDE } from './host.mjs';
+
 const here = dirname(fileURLToPath(import.meta.url));
 
-// --- args: two positionals + --engine (required) + --expect ------------------
+// --- args ---------------------------------------------------------------------
 const argv = process.argv.slice(2);
-let engine, expect = 'SUITE-PREFIX PASS';
+let engine, testsDir = 'tests', luaArgv = ['lua', '-e', '_port=true', 'all.lua'], expect = 'final OK !!!';
 const positional = [];
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--engine') engine = argv[++i];
+  else if (argv[i] === '--tests') testsDir = argv[++i];
+  else if (argv[i] === '--argv') luaArgv = JSON.parse(argv[++i]);
   else if (argv[i] === '--expect') expect = argv[++i];
   else positional.push(argv[i]);
 }
-const [wasmPath, scriptPath] = positional;
-
+const [wasmPath] = positional;
 const ENGINES = ['chromium', 'firefox', 'webkit'];
-if (!wasmPath || !scriptPath || !engine) {
-  console.error('usage: node scripts/browser-witness.mjs <lua.wasm> <script.lua> --engine <chromium|firefox|webkit> [--expect TEXT]');
-  process.exit(2);
-}
-if (!ENGINES.includes(engine)) {
-  console.error(`unknown --engine "${engine}"; must be one of: ${ENGINES.join(', ')}`);
+if (!wasmPath || !engine || !ENGINES.includes(engine)) {
+  console.error('usage: node scripts/browser-witness.mjs <lua.wasm> --engine <chromium|firefox|webkit> [--tests <dir>] [--argv <json>] [--expect TEXT]');
   process.exit(2);
 }
 
-// --- static server: fixed routes, zero special headers ----------------------
+// --- the file bundle: every .lua in the tests directory, by name --------------
+const files = {};
+for (const name of await readdir(testsDir)) {
+  if (name.endsWith('.lua')) files[name] = await readFile(join(testsDir, name), 'utf8');
+}
+
+// --- static server: fixed routes, zero special headers --------------------------
 const routes = {
-  '/lua-page.html':        [resolve(here, 'browser/lua-page.html'), 'text/html'],
-  '/wasi-stdio-shim.mjs':  [resolve(here, 'browser/wasi-stdio-shim.mjs'), 'text/javascript'],
-  '/lua.wasm':             [resolve(wasmPath), 'application/wasm'],
-  '/witness.lua':          [resolve(scriptPath), 'text/plain'],
+  '/lua-page.html': [() => readFile(resolve(here, 'browser/lua-page.html')), 'text/html'],
+  '/host.mjs':  [() => readFile(resolve(here, 'host.mjs')), 'text/javascript'],
+  '/lua.wasm':       [() => readFile(resolve(wasmPath)), 'application/wasm'],
+  '/files.json':     [async () => JSON.stringify(files), 'application/json'],
 };
 const server = createServer(async (req, res) => {
   const route = routes[new URL(req.url, 'http://x').pathname];
   if (!route) { res.writeHead(404).end(); return; }
   res.writeHead(200, { 'content-type': route[1] });
-  res.end(await readFile(route[0]));
+  res.end(await route[0]());
 });
 await new Promise(ok => server.listen(0, '127.0.0.1', ok));
 const base = `http://127.0.0.1:${server.address().port}`;
 
-// --- launch the REQUESTED engine, with no fallback --------------------------
-// playwright-core is a dev-only dependency; resolve it from the invoking
-// directory so it never has to live in this repo.
+// --- launch the REQUESTED engine, with no fallback ----------------------------
 const require = createRequire(resolve(process.cwd(), 'noop.js'));
-const browserType = require('playwright-core')[engine];   // pw.chromium/.firefox/.webkit
-
-// Per-engine executablePath override; each var applies only to its own engine.
+let pw;
+try { pw = require('playwright-core'); } catch { pw = require('playwright'); }   // either package exports the browser types
+const browserType = pw[engine];
 const exeVar = { chromium: 'CHROMIUM', firefox: 'FIREFOX', webkit: 'WEBKIT' }[engine];
-const exePath = process.env[exeVar] && existsSync(process.env[exeVar])
-  ? process.env[exeVar]
-  : undefined;
+const exePath = process.env[exeVar] && existsSync(process.env[exeVar]) ? process.env[exeVar] : undefined;
 
 let browser;
 try {
   browser = await browserType.launch(exePath ? { executablePath: exePath } : {});
 } catch (e) {
-  // GUARD 1: no silent fallback. A missing/unlaunchable engine fails the
-  // witness; it never quietly runs a different engine (e.g. Chromium).
   console.error(`FATAL: could not launch ${engine} (no fallback to another engine): ${e.message}`);
   server.close();
   process.exit(3);
 }
 
 try {
-  // GUARD 2: Playwright's own browser type must match what we asked for.
   const launched = browser.browserType().name();
   if (launched !== engine) {
     console.log(`ENGINE MISMATCH (launcher): requested ${engine}, launched ${launched}`);
@@ -104,29 +100,20 @@ try {
     process.exitCode = 1;
   } else {
     const page = await browser.newPage();
-    await page.goto(`${base}/lua-page.html?wasm=/lua.wasm&script=/witness.lua`);
-    await page.waitForFunction(() => window.__witness && window.__witness.done,
-                               null, { timeout: 120_000 });
-    // GUARD 3: fingerprint the ACTUAL engine from inside the page.
-    const r = await page.evaluate(() => {
-      // UA-token fingerprint, checked in this order: Firefox has "Firefox/";
-      // Chromium has "Chrome/" (atop AppleWebKit/537.36); WebKit/Safari has
-      // "AppleWebKit/" with no Chrome token. Order matters -- Chromium also
-      // reports AppleWebKit, so it must be tested before the bare WebKit case.
-      const ua = navigator.userAgent;
-      const detected = /Firefox\//.test(ua)          ? 'firefox'
-        : /(Chrome|Chromium|Edg)\//.test(ua)         ? 'chromium'
-        : /AppleWebKit\//.test(ua)                   ? 'webkit'
-        : 'unknown';
-      return { exitCode: window.__witness.exitCode, transcript: window.__witness.transcript, detected, ua };
-    });
-    console.log(r.transcript.split('\n').slice(-8).join('\n'));
-    console.log(`(${engine} ${browser.version()}, detected-engine=${r.detected}, exit ${r.exitCode})`);
+    page.on('pageerror', e => console.log(`[page error] ${e.message}`));
+    const env = { LUA_INIT: LOCALE_PRELUDE, PATH: '/usr/bin:/bin' };
+    const url = `${base}/lua-page.html?wasm=/lua.wasm&files=/files.json&argv=${encodeURIComponent(JSON.stringify(luaArgv))}&env=${encodeURIComponent(JSON.stringify(env))}`;
+    await page.goto(url);
+    await page.waitForFunction(() => window.__witness && window.__witness.done, null, { timeout: 300_000 });
+    const r = await page.evaluate(() => window.__witness);
+    console.log(r.transcript.split("\n").slice(r.exitCode === 0 ? -8 : -40).join("\n"));
+    console.log(`(${engine} ${browser.version()}, detected-engine=${r.detected}, exit ${r.exitCode}, ${r.ms} ms, crossOriginIsolated=${r.coi}, imports=${(r.imports || []).join(',')})`);
     const engineOk = r.detected === engine;
     if (!engineOk) console.log(`ENGINE MISMATCH (runtime): requested ${engine}, page ran on ${r.detected} (ua: ${r.ua})`);
-    const pass = engineOk && r.exitCode === 0 && r.transcript.includes(expect);
+    const importsOk = (r.imports || []).join(',') === 'luaw.now,luaw.read,luaw.write';
+    const pass = engineOk && r.exitCode === 0 && r.transcript.includes(expect) && r.coi === false && importsOk;
     console.log(pass ? `BROWSER WITNESS PASS (${engine})`
-                     : `BROWSER WITNESS FAIL (${engine}${engineOk ? `, expected "${expect}", exit 0` : ', wrong engine'})`);
+                     : `BROWSER WITNESS FAIL (${engine}: ${[!engineOk && 'wrong engine', r.exitCode !== 0 && `exit ${r.exitCode}`, !r.transcript.includes(expect) && `no "${expect}"`, r.coi !== false && 'crossOriginIsolated', !importsOk && 'imports'].filter(Boolean).join(', ')})`);
     process.exitCode = pass ? 0 : 1;
   }
 } finally {

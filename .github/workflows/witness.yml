@@ -3,21 +3,23 @@
 # native: the deepest witness -- the ltests-instrumented interpreter
 #   (checked allocator, internal assertions) runs the full official
 #   suite, C-API battery included.
-# wasm: the artifact witnesses -- the interpreter passes the official
-#   suite on two engines (wasmtime = non-V8 cross-check; Node 24 = V8
-#   with stable exnref), and the embeddable reactor passes its
-#   host-interface witness plus the stress battery.
-# embed: the link-Lua-in consumer shape (#11) -- the source-drop
-#   downstream (drives embedded Lua + Lua error across the boundary) and
-#   the external-EH witness (typed catches via a real wasm-EH libc++abi).
-# browser: the suite-prefix bundle in a real Chromium.
-# provenance: the vendored core is verbatim stock 5.4.8 outside the
-#   declared files.
+# wasm: the artifact -- lua.wasm in its release form (stripped,
+#   wasm-opt) passes the host-interface witness, the full official suite
+#   in portable mode through stock lua.c under Node, and the differential
+#   witness against native Lua 5.4.8 on musl (byte-identical stdout,
+#   stderr, exit status); the libc alone passes its smoke and allocator
+#   stress witnesses first.
+# browser: the same full suite in Chromium, Firefox and WebKit from a
+#   plain page (no COOP/COEP, no SharedArrayBuffer, no workers).
+# provenance: the vendored Lua core is verbatim stock 5.4.8 outside the
+#   declared file, and the vendored musl is the signed 1.2.6 release.
 #
-# Toolchain: zig c++ (pinned 0.15.1 = clang 20.1.2) -- the standardized
-# EH encoding needs LLVM 20+, which Ubuntu does not package; zig carries
-# its own wasi sysroot. 0.16 (LLVM 21) miscompiles this build (its
+# Toolchain: zig (pinned 0.15.1 = clang 20.1.2) -- the standard EH
+# encoding needs LLVM 20+, which Ubuntu does not package; zig's cc/c++/ar
+# build musl and Lua for wasm32-freestanding and bring the wasm32
+# compiler-rt builtins. 0.16 (LLVM 21) miscompiles this build (its
 # backend rejects the micro-runtime's tag symbols; see src/onelua.c).
+# Binaryen (npm) supplies wasm-opt.
 name: witness
 on:
   push:
@@ -58,103 +60,8 @@ jobs:
             || { echo "::error::C-API tests skipped (testC not active); tests/libs missing"; exit 1; }
 
   wasm:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '>=24.15 <25'  # 24.0-24.14 reject stable exnref (need --experimental-wasm-exnref); 24.15 turned it on
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - name: toolchain (zig c++ = clang 20.1.2; wasmtime)
-        run: python3 -m pip install 'ziglang==0.15.1' wasmtime
-      - name: build lua.wasm (standardized EH encoding)
-        run: >
-          make wasm
-          WASM_CLANGXX="python3 -m ziglang c++" WASM_SYSROOT=
-          WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling"
-      - name: official suite under wasmtime (non-V8 engine)
-        run: cd tests && python3 ../scripts/wasmtime-run.py ../lua.wasm -e"_port=true" all.lua
-      - name: official suite under Node 24 (V8, stable exnref)
-        run: cd tests && node ../scripts/wasm-run.mjs ../lua.wasm -e"_port=true" all.lua
-      - name: build the reactor and run the embed witness
-        run: >
-          make wasm-lib
-          WASM_CLANGXX="python3 -m ziglang c++" WASM_SYSROOT=
-          WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling"
-          && node scripts/embed-demo.mjs lua-lib.wasm
-          && node scripts/reactor-stress.mjs lua-lib.wasm
-
-  embed:
-    # The second consumer shape (#11): a downstream that links Lua *into*
-    # its own wasm32-wasi artifact via the source-drop path, drives
-    # embedded Lua, and catches a Lua error across the boundary.
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '>=24.15 <25'  # 24.0-24.14 reject stable exnref (need --experimental-wasm-exnref); 24.15 turned it on
-      - name: toolchain (zig c++ = clang 20.1.2)
-        run: python3 -m pip install 'ziglang==0.15.1'
-      - name: build the embed example (link Lua in) and run its witness
-        run: |
-          set -o pipefail
-          WASM_CXX="python3 -m ziglang c++" WASM_SYSROOT= \
-          WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling" \
-            examples/embed/build.sh | tee /tmp/embed.log
-          grep -q 'EMBED WITNESS OK' /tmp/embed.log \
-            || { echo "::error::embed example did not print EMBED WITNESS OK"; exit 1; }
-      - name: external-EH witness (typed catches with a real wasm-EH libc++abi)
-        # WASM_EH=external's runtime proof: the micro-shim suppressed, a real
-        # libc++abi built with -fwasm-exceptions from zig's bundled LLVM
-        # runtime sources, and a downstream catching its own TYPED exception
-        # while Lua errors travel the same runtime. See build-eh.sh.
-        run: |
-          set -o pipefail
-          examples/embed/build-eh.sh | tee /tmp/embed-eh.log
-          grep -q 'EXTERNAL-EH WITNESS OK' /tmp/embed-eh.log \
-            || { echo "::error::external-EH witness did not print EXTERNAL-EH WITNESS OK"; exit 1; }
-
-  browser:
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false               # one engine's result must not cancel the others
-      matrix:
-        engine: [chromium, firefox, webkit]
-    # All three browser engines are gating. The suite-prefix bundle (the wasm-EH
-    # detonation sequence) runs to SUITE-PREFIX PASS on Chromium (V8), Firefox
-    # (SpiderMonkey), and WebKit (JSC family) -- first witnessed 2026-07-22 with
-    # Firefox 151 and WebKit 26.5 (#42). The driver refuses to pass unless the
-    # page actually ran on the requested engine (three guards).
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '>=24.15 <25'  # 24.0-24.14 reject stable exnref (need --experimental-wasm-exnref); 24.15 turned it on
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - name: toolchain
-        run: python3 -m pip install 'ziglang==0.15.1'
-      - name: build lua.wasm
-        run: >
-          make wasm
-          WASM_CLANGXX="python3 -m ziglang c++" WASM_SYSROOT=
-          WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling"
-      - name: install ${{ matrix.engine }}
-        run: npm i --no-save playwright@1.61.1 && npx playwright install --with-deps ${{ matrix.engine }}
-      - name: suite-prefix bundle in a real ${{ matrix.engine }}
-        run: >
-          python3 scripts/suite-bundle.py
-          && node scripts/browser-witness.mjs lua.wasm tests/suite-prefix-bundle.lua --engine ${{ matrix.engine }}
-
-  next:
-    # The browser-native artifact (doc/history/browser-native-2026-10-13.md,
-    # merge 2): stock Lua on vendored musl with three imports, built beside
-    # the WASI artifacts above until the cutover. Every witness here runs on
-    # the release form of the file (stripped, wasm-opt).
+    # Every witness here runs on the release form of the file: what is
+    # tested is what ships.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -170,37 +77,39 @@ jobs:
         run: >
           make libc-smoke libc-stress
           WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar"
-      - name: build lua-next.wasm (release form) and print its size
+      - name: build lua.wasm (release form) and print its size
         run: >
-          make wasm-next
+          make wasm
           WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar"
           WASM_CLANGXX="python3 -m ziglang c++"
           WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling"
           WASM_OPT=node_modules/binaryen/bin/wasm-opt
       - name: host-interface witness (imports, exports, exit, messages, adversarial battery)
-        run: node scripts/next-interface.mjs lua-next.wasm
+        run: node scripts/interface-witness.mjs lua.wasm
       - name: full official suite through stock lua.c (luaw_main), Node
-        run: node scripts/next-suite.mjs lua-next.wasm tests
+        run: node scripts/suite-witness.mjs lua.wasm tests
       - name: differential against native Lua 5.4.8 on musl (byte-identical stdout, stderr, exit status)
         run: >
-          make next-differential
+          make differential
           WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar"
           WASM_CLANGXX="python3 -m ziglang c++"
           WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling"
           WASM_OPT=node_modules/binaryen/bin/wasm-opt
       - uses: actions/upload-artifact@v4
         with:
-          name: lua-next.wasm
-          path: lua-next.wasm
+          name: lua.wasm
+          path: lua.wasm
 
-  next-browser:
-    # The full official suite on the browser-native artifact in all three
-    # engines, from a plain static page: no COOP/COEP, no SharedArrayBuffer,
-    # no workers (asserted: crossOriginIsolated must be false).
-    needs: next
+  browser:
+    # The full official suite in all three engines, from a plain static
+    # page: no COOP/COEP, no SharedArrayBuffer, no workers (asserted:
+    # crossOriginIsolated must be false). All three gate. The driver
+    # refuses to pass unless the page actually ran on the requested
+    # engine (three guards).
+    needs: wasm
     runs-on: ubuntu-24.04
     strategy:
-      fail-fast: false
+      fail-fast: false               # one engine's result must not cancel the others
       matrix:
         engine: [chromium, firefox, webkit]
     steps:
@@ -210,11 +119,11 @@ jobs:
           node-version: '>=24.15 <25'
       - uses: actions/download-artifact@v4
         with:
-          name: lua-next.wasm
+          name: lua.wasm
       - name: install ${{ matrix.engine }}
         run: npm i --no-save playwright@1.61.1 && npx playwright install --with-deps ${{ matrix.engine }}
       - name: full official suite in a real ${{ matrix.engine }}
-        run: node scripts/next-browser.mjs lua-next.wasm --engine ${{ matrix.engine }}
+        run: node scripts/browser-witness.mjs lua.wasm --engine ${{ matrix.engine }}
 
   provenance:
     runs-on: ubuntu-24.04

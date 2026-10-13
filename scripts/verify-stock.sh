@@ -19,7 +19,7 @@
 #   - a file outside the known-modified set that differs   -> FAIL
 #   - a known-modified file that is byte-identical to stock -> FAIL (the
 #     modified list has gone stale)
-# Files unique to this repo (the onelua monolith, the WASI shims) are
+# Files unique to this repo (the onelua monolith) are
 # reported, not diffed.
 #
 # Network: by default this fetches the release from lua.org. Run it where

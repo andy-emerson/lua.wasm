@@ -1,5 +1,4 @@
 lua.wasm
-lua-lib.wasm
 lua-debug
 tests/libs/*.so
 tests/libs/all
@@ -9,6 +8,4 @@ lua_tmp_*
 *.a
 src/lua
 src/luac
-tests/suite-prefix-bundle.lua
 build/
-lua-next.wasm
