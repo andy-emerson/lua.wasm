@@ -83,6 +83,20 @@ console.log('the clock');
   lua2.init();
   lua2.run('local a = os.clock() local b = os.clock() print(b > a, b - a)');
   eq('os.clock advances with now() (relative, seconds)', lua2.take().stdout, 'true\t0.25\n');
+  /* os.clock is wall time since the VM was created (luaw_init), not
+     since the first clock read: host time between init and the first
+     read counts, as idle time does for a process */
+  let t2 = t0;
+  const lua3 = await fresh({ now: () => t2 });
+  lua3.init();                       /* origin: t0 */
+  t2 = t0 + 2000;
+  lua3.run('print(os.clock())');
+  eq('os.clock counts from luaw_init', lua3.take().stdout, '2.0\n');
+  let t3 = t0;
+  const lua4 = await fresh({ now: () => t3 });
+  t3 = t0 + 5000;                    /* host setup before main: not counted */
+  lua4.main(['lua', '-e', 'print(os.clock())']);
+  eq('os.clock counts from luaw_main', lua4.take().stdout, '0.0\n');
   /* a coarse host clock (Firefox rounds timers to 1 ms) must not repeat
      an instant: musl derives temp-file names from the clock alone */
   const frozen = await fresh({ now: () => t0 });

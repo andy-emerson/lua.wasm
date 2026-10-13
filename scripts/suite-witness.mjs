@@ -21,10 +21,10 @@ import { createLua, LOCALE_PRELUDE } from './host.mjs';
 const [file, dir = 'tests'] = process.argv.slice(2);
 if (!file) { console.error('usage: node scripts/suite-witness.mjs <lua.wasm> [tests-dir]'); process.exit(2); }
 
-let sawFinalOK = false, tail = '';
+let sawFinalOK = false, tail = '', errText = '';
 const lua = await createLua(readFileSync(file), {
   stdout: s => { process.stdout.write(s); tail = (tail + s).slice(-200); if (tail.includes('final OK !!!')) sawFinalOK = true; },
-  stderr: s => process.stderr.write(s),
+  stderr: s => { process.stderr.write(s); errText += s; },
 });
 const imports = lua.imports.join(',');
 if (imports !== 'luaw.now,luaw.read,luaw.write') { console.error(`FAIL: imports are [${imports}]`); process.exit(1); }
@@ -46,6 +46,12 @@ catch (e) { console.error(`\nFAIL: the suite trapped: ${e.message} (exit code ${
 const ms = Math.round(performance.now() - t);
 if (status !== 0 || !sawFinalOK) {
   console.error(`\nFAIL: lua exited ${status}${sawFinalOK ? '' : ', and "final OK !!!" was not printed'} (${ms} ms)`);
+  process.exit(1);
+}
+/* the OS layer reports a syscall it does not implement once on stderr
+   (port/luaw-sys.c); the suite must reach none */
+if (errText.includes('luaw: unsupported syscall')) {
+  console.error('\nFAIL: the suite reached a syscall the OS layer does not implement (see stderr above)');
   process.exit(1);
 }
 console.log(`[suite-witness] PASS: full official suite (_port mode) on ${file}, exit 0, "final OK !!!" seen (${ms} ms)`);

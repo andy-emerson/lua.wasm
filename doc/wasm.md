@@ -157,7 +157,7 @@ memory counts. Any other difference is a bug in the port.
 
 ## The other witnesses
 
-`scripts/interface-witness.mjs lua.wasm` (70 checks): the import list,
+`scripts/interface-witness.mjs lua.wasm` (72 checks): the import list,
 every export, the exit path, the message channel, the filesystem, and
 the adversarial battery (contained stack overflow, mid-flight program
 death and replacement, a 50k-frame pump, GC under allocation pressure).
@@ -171,9 +171,22 @@ without Lua.
 
 - `setvbuf` after I/O has happened is undefined behaviour in C; musl
   drops the pending buffer. Call it first, as the manual says.
+- **`os.clock` is wall time since the VM was created** (`luaw_init` or
+  `luaw_main`), not CPU time: a browser has no CPU-time source for the
+  thread running wasm, so the one import that could supply it (`cpu()`)
+  would only ever be answerable in Node. This is the one knowing
+  divergence from native musl, where `clock()` is CPU time; the
+  differential corpus excludes timing on both sides. Reopen if a
+  non-browser host where CPU accounting matters asks for it.
 - A clock that only advances by a nanosecond per repeated read keeps
   `os.clock` and `os.time` monotone, but back-to-back `os.clock` reads on
   a host with a coarse timer measure that nanosecond, not real time.
+- A syscall the OS layer does not implement fails with `ENOSYS` (musl
+  takes its fallback or reports the errno) and prints
+  `luaw: unsupported syscall N` once per number on stderr, straight to
+  the `write` import. Native Linux answers every syscall musl makes, so
+  the line marks a gap in the port; the suite witness asserts it never
+  appears, and the differential would show it as a stderr difference.
 - `brk` never moves, so musl's allocator is entirely on `mmap`; memory
   grows in 4 KiB pages and freed pages are reused but never returned to
   the engine (`memory.grow` only ever grows).

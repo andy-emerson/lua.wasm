@@ -136,7 +136,10 @@ WASM_EXTRA=
 # because the original failure was real and the cost is negligible).
 # -DLUA_USE_LINUX so the libc feature set (POSIX popen/dlopen entry
 # points, isatty) is the one the native musl oracle has; the standard EH
-# encoding is selected explicitly (-wasm-use-legacy-eh=false).
+# encoding is selected explicitly (-wasm-use-legacy-eh=false). -O2: under
+# zig c++ 0.15.1 every -O1/-O2/-O3 is handed to clang as -O2 (objects
+# byte-identical, checked 2026-10-13; only -Os differs), so -O3 is not a
+# choice this toolchain offers and plain clang-20 is kept at -O2 to match.
 WASM_CFLAGS= --target=wasm32-freestanding $(MUSL_SYSINC) -O2 -fno-strict-aliasing \
 	  -fwasm-exceptions -nostdlib++ -Isrc \
 	  -DLUA_USE_LINUX -DLUA_USE_JUMPTABLE=0 \

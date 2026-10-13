@@ -18,6 +18,7 @@
 */
 #include "pthread_impl.h"
 #include "libc.h"
+#include "ksigaction.h"
 #include "luaw-sys.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -129,8 +130,13 @@ void luaw_unmap_anon(long addr, unsigned long len) {
 
 /* ── time ───────────────────────────────────────────────────────────
 ** One clock from the host. CLOCK_REALTIME is it; the monotonic and
-** CPU-time clocks (os.clock) count from the first call, so they start
-** near zero and only go up, as on a fresh process.
+** CPU-time clocks count from luaw_clock_start, which the VM calls when
+** it is created (luaw_init, luaw_main), so os.clock starts near zero
+** and only goes up, as on a fresh process. It is WALL time since then,
+** not CPU time: a browser has no CPU-time source for the thread
+** running wasm, and a cpu import would only ever be answerable
+** elsewhere (the one knowing divergence from native musl; doc/wasm.md).
+** A clock read before any start counts from that read.
 **
 ** No two reads return the same instant: a kernel clock has nanosecond
 ** resolution and musl relies on that (its temporary-file names are
@@ -141,8 +147,7 @@ void luaw_unmap_anon(long addr, unsigned long len) {
 static long long clock_origin = -1;
 static long long last_ns = -1;
 
-static void fill_timespec(long clk, void *out) {
-  struct { long long sec; long nsec; } *ts = out;   /* musl's 64-bit timespec */
+static long long now_ns(void) {
   /* integer nanoseconds: ms since the epoch is ~1.7e12, so ms * 1e6 as a
      double would lose the low nanoseconds; split first */
   double ms = luaw_host_now();
@@ -150,6 +155,14 @@ static void fill_timespec(long clk, void *out) {
   long long ns = sec * 1000000000LL + (long long)((ms - (double)sec * 1000.0) * 1e6);
   if (ns <= last_ns) ns = last_ns + 1;
   last_ns = ns;
+  return ns;
+}
+
+void luaw_clock_start(void) { clock_origin = now_ns(); }
+
+static void fill_timespec(long clk, void *out) {
+  struct { long long sec; long nsec; } *ts = out;   /* musl's 64-bit timespec */
+  long long ns = now_ns();
   if (clk != CLOCK_REALTIME) {
     if (clock_origin < 0) clock_origin = ns;
     ns -= clock_origin;
@@ -160,6 +173,28 @@ static void fill_timespec(long clk, void *out) {
 
 /* ── the dispatcher ─────────────────────────────────────────────── */
 static int is_tty(long fd) { return fd >= 0 && fd <= 2; }
+
+/* A syscall the layer does not implement fails with ENOSYS, as on a
+** kernel without it -- musl then takes its fallback or reports the
+** errno -- and says so once per syscall number on stderr, straight to
+** the host (not through stdio, which may be what is calling). Native
+** Linux answers every syscall musl makes, so this line never appears
+** on a path the differential witness compares; where it does appear it
+** marks a gap in the port worth knowing about. The suite witness
+** asserts it stays silent. */
+static void report_unsupported(long n) {
+  static unsigned char seen[64];              /* syscall numbers < 512 */
+  char msg[40], *p = msg + sizeof msg;
+  unsigned long u = n < 0 ? 0 : (unsigned long)n;
+  if (u < 512) {
+    if (seen[u >> 3] & (1u << (u & 7))) return;
+    seen[u >> 3] |= (unsigned char)(1u << (u & 7));
+  }
+  *--p = '\n';
+  do { *--p = (char)('0' + u % 10); u /= 10; } while (u);
+  p -= 26; memcpy(p, "luaw: unsupported syscall ", 26);
+  luaw_host_write(2, p, (int)(msg + sizeof msg - p));
+}
 
 static long tty_write(long fd, const void *buf, size_t n) {
   if (fd != 1 && fd != 2) return -EBADF;
@@ -261,6 +296,12 @@ long __luaw_syscall(long n, long a, long b, long c, long d, long e, long f) {
     return 1;
   case SYS_rt_sigprocmask:
     return 0;
+  case SYS_rt_sigaction:              /* signals are never delivered: accept
+                                         the handler, report SIG_DFL before */
+    if (c) memset((void *)c, 0, sizeof(struct k_sigaction));
+    return 0;
+  case SYS_mprotect:                  /* all memory is read-write */
+    return 0;
   case SYS_exit: case SYS_exit_group:
     luaw_exit_status = (int)a;
     luaw_exited = 1;
@@ -270,5 +311,6 @@ long __luaw_syscall(long n, long a, long b, long c, long d, long e, long f) {
     luaw_exited = 1;
     __builtin_trap();
   }
+  report_unsupported(n);
   return -ENOSYS;
 }
