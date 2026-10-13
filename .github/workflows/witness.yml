@@ -165,3 +165,8 @@ jobs:
           echo "lua-5.4.8.tar.gz sha256 (for the LUA_SHA256 pin in verify-stock.sh):"
           sha256sum /tmp/lua.tar.gz
           bash scripts/verify-stock.sh
+      - name: vendored C library is verbatim signed musl (third_party/musl)
+        # Fetches the release, its detached signature and the project key
+        # from musl.libc.org; pins (sha256, key fingerprint) live in the
+        # script. gpg/gpgv ship on ubuntu-24.04 runners.
+        run: sh scripts/verify-musl.sh
