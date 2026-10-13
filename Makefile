@@ -198,11 +198,13 @@ wasm: $(WASM_O)
 
 # ── The loader: lua.js ─────────────────────────────────────────────────────
 # One classic script a page includes to run <script type="text/lua"> tags
-# and to reach the VM from JavaScript (D8 in the design record): host.mjs
-# and scripts/loader.js in one IIFE. Witness: scripts/lua-js-witness.mjs.
+# and to reach the VM from JavaScript (D8 in the design record): host.mjs,
+# scripts/loader.js and lua.wasm itself (base64) in one IIFE -- the one
+# shipped form; the build prints its size against the module alone.
+# Witness: scripts/lua-js-witness.mjs (three engines, and from file://).
 LUA_JS= lua.js
-$(LUA_JS): scripts/host.mjs scripts/loader.js scripts/build-lua-js.mjs
-	node scripts/build-lua-js.mjs $@
+$(LUA_JS): $(WASM_O) scripts/host.mjs scripts/loader.js scripts/build-lua-js.mjs
+	node scripts/build-lua-js.mjs $@ $(WASM_O)
 lua-js: $(LUA_JS)
 
 # ── The oracle and the differential witness ────────────────────────────────

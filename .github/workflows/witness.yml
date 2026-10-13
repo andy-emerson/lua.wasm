@@ -10,7 +10,9 @@
 #   stderr, exit status); the libc alone passes its smoke and allocator
 #   stress witnesses first.
 # browser: the same full suite in Chromium, Firefox and WebKit from a
-#   plain page (no COOP/COEP, no SharedArrayBuffer, no workers).
+#   plain page (no COOP/COEP, no SharedArrayBuffer, no workers), and the
+#   lua.js witness: one page per D8 row, in the same three engines and
+#   from a file:// page.
 # provenance: the vendored Lua core is verbatim stock 5.4.8 outside the
 #   declared file, and the vendored musl is the signed 1.2.6 release.
 #
@@ -95,10 +97,14 @@ jobs:
           WASM_CLANGXX="python3 -m ziglang c++"
           WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling"
           WASM_OPT=node_modules/binaryen/bin/wasm-opt
+      - name: build lua.js (lua.wasm inlined) and print its size
+        run: make lua-js WASM_OPT=node_modules/binaryen/bin/wasm-opt
       - uses: actions/upload-artifact@v4
         with:
           name: lua.wasm
-          path: lua.wasm
+          path: |
+            lua.wasm
+            lua.js
 
   browser:
     # The full official suite in all three engines, from a plain static
@@ -124,6 +130,8 @@ jobs:
         run: npm i --no-save playwright@1.61.1 && npx playwright install --with-deps ${{ matrix.engine }}
       - name: full official suite in a real ${{ matrix.engine }}
         run: node scripts/browser-witness.mjs lua.wasm --engine ${{ matrix.engine }}
+      - name: lua.js, one page per D8 row, in a real ${{ matrix.engine }} (and from file://)
+        run: node scripts/lua-js-witness.mjs lua.js lua.wasm --engine ${{ matrix.engine }}
 
   provenance:
     runs-on: ubuntu-24.04

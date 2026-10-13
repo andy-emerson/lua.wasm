@@ -1,7 +1,9 @@
 // loader.js -- the part of lua.js that makes <script type="text/lua"> work
 // in HTML (D8 in doc/history/browser-native-2026-10-13.md). Not a module:
-// scripts/build-lua-js.mjs wraps this and host.mjs into the one classic
-// script lua.js, so `createLua` is in scope here.
+// scripts/build-lua-js.mjs wraps this, host.mjs and lua.wasm itself
+// (LUA_WASM_INLINE, base64) into the one classic script lua.js, so
+// `createLua` and the module's bytes are in scope here and nothing is
+// fetched to start.
 //
 // What a page author gets with no JavaScript written (the D8 rows):
 //   1,2  a tag's print output appears on the page where the tag sits, an
@@ -15,17 +17,11 @@
 //   10   every tag runs as the resident coroutine: a top-level
 //        coroutine.yield() returns to the page and resumes next animation
 //        frame; a tag that never yields runs to completion
-//   8    lua.wasm is looked up beside lua.js (the inline build needs no
-//        lookup); data-wasm on the lua.js tag overrides
 // The Lua global is the JavaScript surface (row 11); this cycle exposes
 // Lua.ready (resolves once the page's tags have run) and Lua.exitCode.
 
 (function () {
   'use strict';
-
-  const loaderTag = document.currentScript;
-  const wasmUrl = (loaderTag && loaderTag.dataset.wasm) ||
-    (loaderTag && loaderTag.src ? new URL('lua.wasm', loaderTag.src).href : 'lua.wasm');
 
   const LUA_YIELD = 1;
 
@@ -324,9 +320,7 @@
 
   // --- boot ----------------------------------------------------------------------
   async function boot() {
-    const bytes = typeof LUA_WASM_INLINE !== 'undefined' ? LUA_WASM_INLINE()
-      : await fetch(wasmUrl).then(r => { if (!r.ok) throw new Error(`fetch ${wasmUrl}: ${r.status}`); return r.arrayBuffer(); });
-    const lua = await createLua(bytes, {
+    const lua = await createLua(LUA_WASM_INLINE(), {
       stdout: t => state.sink && state.sink.print(t),
       stderr: t => state.sink && state.sink.error(t),
     });

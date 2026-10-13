@@ -10,9 +10,10 @@
 // --engine is required and never defaults; the three guards are in
 // scripts/browser/engine.mjs. Exits 0 only if every case passes.
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdtemp, copyFile, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { resolve, dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { ENGINES, detectEngine, launch } from './browser/engine.mjs';
 
@@ -127,6 +128,21 @@ const cases = [
   }],
 ];
 
+// --- a page on disk, opened as file:// (D8 row 12: the one-file form needs
+// no server; src and data-files, which fetch, do not work there) -------------
+const local = await mkdtemp(join(tmpdir(), 'lua-js-'));
+await copyFile(resolve(jsPath), join(local, 'lua.js'));
+await writeFile(join(local, 'local.html'), `<!doctype html><meta charset="utf-8"><title>local</title>
+<script src="lua.js"></script>
+<script type="text/lua">print("from a file:// page", _VERSION)</script>
+<script type="text/lua" src="main.lua"></script>
+`);
+cases.push(['file://', async (p) => {
+  eq('an inline tag runs from a file:// page with no server', await p.outputs(), ['from a file:// page\tLua 5.4\n']);
+  const errs = await p.errors();
+  check('src= from file:// reports on the page (fetch cannot read files)', errs.length === 1 && errs[0].startsWith('lua.js: src:'), errs);
+}, null, pathToFileURL(join(local, 'local.html')).href]);
+
 let failed = 0, passed = 0;
 function check(name, cond, detail = '') {
   if (cond) { passed++; console.log(`  ok   ${name}`); }
@@ -137,15 +153,15 @@ function eq(name, got, want) { check(name, JSON.stringify(got) === JSON.stringif
 const browser = await launch(engine, () => server.close());
 try {
   const ZONES = ['America/New_York', 'Asia/Kolkata', 'Australia/Sydney'];
-  for (const [name, assertions, zone] of cases.flatMap(c => c[0] === 'time' ? ZONES.map(z => [c[0], c[1], z]) : [c])) {
-    console.log(`${name}.html${zone ? ` (${zone})` : ''}`);
+  for (const [name, assertions, zone, url] of cases.flatMap(c => c[0] === 'time' ? ZONES.map(z => [c[0], c[1], z]) : [c])) {
+    console.log(url ? url.replace(/^file:.*\//, 'file://.../') : `${name}.html${zone ? ` (${zone})` : ''}`);
     const context = await browser.newContext(zone ? { timezoneId: zone } : {});
     const page = await context.newPage();
     const con = { log: [], error: [], warning: [] };
     page.on('console', m => { (con[m.type()] ?? (con[m.type()] = [])).push(m.text()); });
     page.on('pageerror', e => con.error.push('[pageerror] ' + e.message));
     await page.addInitScript(() => { window.__raf = 0; const r = window.requestAnimationFrame; window.requestAnimationFrame = (f) => { window.__raf++; return r.call(window, f); }; });
-    await page.goto(`${base}/pages/${name}.html`);
+    await page.goto(url ?? `${base}/pages/${name}.html`);
     await page.evaluate(() => Lua.ready.catch(() => {}));
     const detected = await page.evaluate(detectEngine);
     if (detected !== engine) { check(`page ran on ${engine}`, false, `ran on ${detected}`); await context.close(); continue; }
@@ -163,6 +179,7 @@ try {
 } finally {
   await browser.close();
   server.close();
+  await rm(local, { recursive: true, force: true });
 }
 console.log(`${passed} passed, ${failed} failed (${engine})`);
 console.log(failed ? `LUA.JS WITNESS FAIL (${engine})` : `LUA.JS WITNESS PASS (${engine})`);
