@@ -30,6 +30,8 @@ lua.wasm is honest about maturity, so you can trust what it claims. Every claim 
 - **Stated, not yet witnessed:** the runtime floors. The artifact uses only the standard exception-handling encoding, which [webassembly.org's feature data](https://webassembly.org/features/) puts in Chrome 137, Firefox 131, Safari 18.4 and Node 24.15; CI runs current engines, not the floors. Sizes at this build (zig 0.15.1, binaryen 132, printed by `make`): `lua.wasm` 400,903 bytes (123,786 brotli); `lua.js` with the module inside 561,610 bytes (173,739 brotli) — one file costs about 40% more compressed.
 - **Known and intended:** `os.setlocale("pt_BR")` returns `"pt_BR"` and keeps the `.` decimal point (musl implements no locale-specific numeric formatting; native Lua on musl does the same), so the official suite runs with a documented `LUA_INIT` prelude that reports the locale unavailable; `io.popen` and `os.execute` fail as on a machine with no shell; files live in memory inside the module and do not persist; `os.clock` is wall time since the VM was created, not CPU time (a browser has none to give — the one knowing divergence from native musl).
 
+- **Measured against the alternatives** ([`doc/bench.md`](doc/bench.md), `make bench`; on demand, each table cites its run): against Wasmoon 1.16.0 in the same page and engine, lua.wasm is 2.5–3.3× faster on error handling in Chromium and WebKit and 1.2–1.4× on a game-shaped frame in every engine, within a few percent on allocation and strings, **behind on pure interpretation in WebKit** (0.81×) and **behind on error handling in Firefox** (0.78×, where wasm exceptions are costly), and behind on load-to-first-print in Chromium and Firefox. fengari-web 0.1.4 (Lua 5.3 in JavaScript) is 4–14× behind both. The baseline, taken before any optimization.
+
 Two things it does not do yet: call JavaScript from Lua or pass objects across (a program and the page exchange a string per frame; the bridge is the next milestone, [#58](https://github.com/andy-emerson/lua.wasm/issues/58)), and run on engines older than the standard encoding.
 
 ## Use it
@@ -87,6 +89,7 @@ The durable documents, each with one job and one primary reader:
 | this README | what the project is, where it stands, how to use, build and test it | anyone arriving |
 | [`doc/lua-js.md`](doc/lua-js.md) | the reference for `lua.js`: tags, attributes, the `Lua` global, limits | the page author or web developer |
 | [`doc/wasm.md`](doc/wasm.md) | the reference for `lua.wasm`: what it is made of, the host contract, the witnesses, the sharp edges | the embedder, and the developer of this repository |
+| [`doc/bench.md`](doc/bench.md) | the latest benchmark run against Wasmoon and fengari-web, and what it says | anyone weighing the alternatives; the developer optimizing |
 | [`doc/history/`](doc/history/) | dated design records: decisions with their options, rejected alternatives and reopen conditions; removal records | the developer deciding whether to revisit something |
 | comments in `port/`, `src/onelua.c`, `scripts/` | why each piece is the way it is, at the piece | the developer changing it |
 
@@ -117,6 +120,7 @@ node scripts/interface-witness.mjs lua.wasm          # the host contract, 74 che
 node scripts/suite-witness.mjs lua.wasm tests        # full official suite, port mode, Node
 node scripts/browser-witness.mjs lua.wasm --engine chromium   # and firefox, webkit (needs playwright)
 make differential ...                                # byte-identical with native Lua on musl
+make bench ...                                       # against Wasmoon and fengari (on demand; doc/bench.md)
 
 # the page
 make lua-js && node scripts/lua-js-witness.mjs lua.js lua.wasm --engine chromium   # and firefox, webkit

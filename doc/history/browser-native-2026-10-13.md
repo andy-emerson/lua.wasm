@@ -93,6 +93,11 @@ current emmalloc, which may have fixed `realloc`.
 
 ### 4. Against Wasmoon (2026-10-12)
 
+*Superseded by the reproducible benchmark in `doc/bench.md` (issue #54,
+2026-10-13), which disagrees on `fib` (Wasmoon ahead in WebKit and
+Chromium there) and adds Firefox, WebKit, fengari and load time. The
+numbers below stay as the session observations that framed the design.*
+
 Wasmoon 1.16.0 (npm; Emscripten `-O3`, emmalloc, 27 imports: Emscripten's
 own plus WASI stdio) against the spike build (musl + mallocng, `-O2` —
 asked for as `-O3`, but zig hands clang `-O2` for every level above `-O1`,
