@@ -342,7 +342,7 @@ LUAW_API int luaw_step (const char *msg, size_t len) {
 LUAW_API const char *luaw_message (size_t *len) {
   const char *s;
   size_t n = 0;
-  if (luaw_L == NULL) { if (len) *len = 0; return NULL; }
+  if (luaw_exited || luaw_L == NULL) { if (len) *len = 0; return NULL; }
   lua_getfield(luaw_L, LUA_REGISTRYINDEX, LUAW_MSGKEY);
   s = lua_tolstring(luaw_L, -1, &n);
   lua_pop(luaw_L, 1);

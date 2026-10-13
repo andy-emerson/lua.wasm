@@ -17,8 +17,9 @@
 //   10   every tag runs as the resident coroutine: a top-level
 //        coroutine.yield() returns to the page and resumes next animation
 //        frame; a tag that never yields runs to completion
-// The Lua global is the JavaScript surface (row 11); this cycle exposes
-// Lua.ready (resolves once the page's tags have run) and Lua.exitCode.
+// The Lua global is the JavaScript surface (row 11): Lua.ready resolves
+// once the page's tags have run, and every other member throws before
+// that (doc/lua-js.md lists them).
 
 (function () {
   'use strict';
@@ -45,10 +46,21 @@
       if loaded[name] == nil then loaded[name] = true end
       return loaded[name], path
     end
+    -- the "no file" lines stock require lists after the preload field:
+    -- package.path, then package.cpath, then (for a dotted name) the
+    -- all-in-one loader's search of cpath for the root name
+    local function notfound(name)
+      local _, err = searchpath(name, package.path)
+      local _, cerr = searchpath(name, package.cpath)
+      local msg = "module '" .. name .. "' not found:\\n\\tno field package.preload['" .. name .. "']" .. err .. cerr
+      local root = name:match("^([^.]+)%.")
+      if root then msg = msg .. select(2, searchpath(root, package.cpath)) end
+      return msg
+    end
     function require(name)
       name = tostring(name)
       local v = loaded[name]
-      if v ~= nil then return v end
+      if v then return v end
       local pre = preload[name]
       if pre then
         local r = pre(name, ":preload:")
@@ -58,20 +70,22 @@
       end
       local path, err = searchpath(name, package.path)
       if path then return load_from(name, path) end
-      local msg = "module '" .. name .. "' not found:\\n\\tno field package.preload['" .. name .. "']" .. err
+      local msg = notfound(name)
       if not coroutine.isyieldable() then
         error(msg .. "\\n\\t(lua.js: cannot fetch from here; list it in data-files)", 2)
       end
       local answer = coroutine.yield("\\0lua.js:fetch:" .. name)
       if answer ~= "ok" then error(msg .. "\\n\\t(lua.js: " .. tostring(answer) .. ")", 2) end
-      path, err = searchpath(name, package.path)
-      if not path then error(msg .. err, 2) end
+      path = searchpath(name, package.path)
+      if not path then error(msg, 2) end
       return load_from(name, path)
     end`;
 
   const state = {
     lua: null,
-    exited: false,      // os.exit happened: every later entry refuses
+    booted: false,      // the VM exists and the page's tags have run (Lua.ready)
+    exited: false,      // os.exit happened (or the VM trapped): every later entry refuses
+    why: null,          // the refusal's reason once exited
     exitCode: null,
     sink: null,         // where the running tag's output goes
     tags: 0,
@@ -273,7 +287,7 @@
     const sink = makeSink(tag);
     state.sink = sink;
     if (state.exited) {
-      sink.error(`VM exited (status ${state.exitCode}); this script did not run\n`);
+      sink.error(`${state.why}; this script did not run\n`);
       return;
     }
     const stdin = stdinFor(tag);
@@ -310,12 +324,26 @@
     if (s !== 0) sink.error(lua.lastError() + '\n');
   }
 
-  // os.exit (and abort) leave the VM as a trap; record and refuse from now on
+  // os.exit (and abort) leave the VM as a trap, which the module records
+  // (luaw_last_error reads "VM exited" from then on); any other trap is
+  // a bug, named as such. Either way the VM is finished: record and
+  // refuse from now on.
+  function ended(e) {
+    const lua = state.lua;
+    state.exited = true;
+    if (lua.lastError() === 'VM exited') {
+      state.exitCode = lua.exitCode();
+      state.why = `VM exited (status ${state.exitCode})`;
+      return true;
+    }
+    state.exitCode = null;
+    state.why = `VM trapped (${e && e.message ? e.message : e})`;
+    return false;
+  }
   function trapped(e, sink) {
     if (e instanceof WebAssembly.RuntimeError) {
-      state.exited = true;
-      state.exitCode = state.lua.exitCode();
-      sink.print(`[exit ${state.exitCode}]\n`);
+      if (ended(e)) sink.print(`[exit ${state.exitCode}]\n`);
+      else sink.error(`lua.js: ${state.why}\n`);
       return;
     }
     sink.error(`lua.js: ${e && e.message ? e.message : e}\n`);
@@ -344,6 +372,7 @@
     const tags = Array.from(document.querySelectorAll('script[type="text/lua"]'));
     for (const tag of tags) await runTag(tag);
     state.sink = jsSink;               // from here, output belongs to JavaScript calls
+    state.booted = true;
   }
 
   const ready = new Promise((resolve, reject) => {
@@ -362,16 +391,18 @@
   const jsSink = { print: consoleSink.print, error: consoleSink.error };
   state.sink = jsSink;
 
+  // ready means the VM exists *and* the page's tags have run: a call that
+  // slipped in between would print into the running tag's output
   const vm = () => {
-    if (!state.lua) throw new Error('lua.js: not ready yet (await Lua.ready)');
-    if (state.exited) throw new Error(`VM exited (status ${state.exitCode})`);
+    if (!state.booted) throw new Error('lua.js: not ready yet (await Lua.ready)');
+    if (state.exited) throw new Error(state.why);
     return state.lua;
   };
   const guarded = (f) => {
     const lua = vm();
     try { return f(lua); }
     catch (e) {
-      if (e instanceof WebAssembly.RuntimeError) { state.exited = true; state.exitCode = lua.exitCode(); throw new Error(`VM exited (status ${state.exitCode})`); }
+      if (e instanceof WebAssembly.RuntimeError) { ended(e); throw new Error(state.why); }
       throw e;
     }
   };

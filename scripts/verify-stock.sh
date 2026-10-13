@@ -1,26 +1,19 @@
 #!/bin/sh
 # verify-stock.sh -- witness that the vendored Lua core is verbatim stock
-# 5.4.8 except for the one file we knowingly changed.
+# 5.4.8: every C source, header and the build Makefile in src/ byte-equal
+# to the official release. (Until v0.2.0 five files carried AOT hooks;
+# until v0.3.0 luac.c carried an assert-safe listing rework inherited
+# from the lua-aot import. Both are gone: the artifact never compiled
+# luac.c, and nothing here needs it changed.)
 #
-# The fork vendors PUC-Rio Lua 5.4.8 and modifies exactly one file:
-# luac.c (the assert-safe bytecode-listing rework: stock luac hoists
-# GETARG_* into locals, which trips lua_assert on opcodes lacking those
-# argument formats under -DLUAI_ASSERT; found by this witness's first CI
-# run -- it was inherited from the lua-aot import, undeclared). Until
-# v0.2.0 there were five modified files: lobject.h, lfunc.c, lvm.c, and
-# luaconf.h carried AOT hooks, now removed with AOT.
-#
-# Refreshing to a new Lua release: replace src/ with a clean copy, reapply
-# the luac.c change above, and extract upstream's testes/* into this repo's
-# tests/ (contents verbatim; only the directory name differs -- upstream
-# ships the suite in testes/). This script is the guardrail for step one.
-# This script diffs every source
-# file present in both the official release and src/:
-#   - a file outside the known-modified set that differs   -> FAIL
-#   - a known-modified file that is byte-identical to stock -> FAIL (the
-#     modified list has gone stale)
-# Files unique to this repo (the onelua monolith) are
-# reported, not diffed.
+# Refreshing to a new Lua release: replace src/ with a clean copy and
+# extract upstream's testes/* into this repo's tests/ (contents verbatim;
+# only the directory name differs -- upstream ships the suite in
+# testes/). This script is the guardrail for step one: it diffs every
+# file present in both the official release's src/ and ours:
+#   - any shared file that differs -> FAIL
+# Files unique to this repo (the onelua monolith) are reported, not
+# diffed.
 #
 # Network: by default this fetches the release from lua.org. Run it where
 # outbound HTTPS to lua.org is permitted -- locally, or the CI job in #3;
@@ -35,7 +28,6 @@ LUA_VERSION=5.4.8
 LUA_SHA256="4f18ddae154e793e46eeab727c59ef1c0c0c2b744e7b94219710d76f530629ae"
 URL="https://www.lua.org/ftp/lua-${LUA_VERSION}.tar.gz"
 
-MODIFIED="luac.c"
 REPO_SRC=$(CDPATH= cd "$(dirname "$0")/../src" && pwd)
 
 work=$(mktemp -d)
@@ -56,12 +48,10 @@ else
   UP_SRC="$work/lua-${LUA_VERSION}/src"
 fi
 
-is_modified() { case " $MODIFIED " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
-
 fail=0
 
-# 1. every shared source file must be verbatim, unless known-modified
-for up in "$UP_SRC"/*.c "$UP_SRC"/*.h "$UP_SRC"/*.hpp; do
+# 1. every shared file must be verbatim
+for up in "$UP_SRC"/*.c "$UP_SRC"/*.h "$UP_SRC"/*.hpp "$UP_SRC"/Makefile; do
   [ -f "$up" ] || continue
   f=$(basename "$up")
   ours="$REPO_SRC/$f"
@@ -69,15 +59,8 @@ for up in "$UP_SRC"/*.c "$UP_SRC"/*.h "$UP_SRC"/*.hpp; do
     echo "  upstream-only, not vendored: $f"
     continue
   fi
-  if is_modified "$f"; then
-    if cmp -s "$up" "$ours"; then
-      echo "STALE: $f is listed as modified but is identical to stock"
-      fail=1
-    else
-      echo "  modified (expected): $f"
-    fi
-  elif ! cmp -s "$up" "$ours"; then
-    echo "UNEXPECTED DIFF: $f differs from stock but is not in the modified list"
+  if ! cmp -s "$up" "$ours"; then
+    echo "UNEXPECTED DIFF: $f differs from stock"
     diff -u "$up" "$ours" | head -60 || true
     fail=1
   fi
@@ -91,7 +74,7 @@ for ours in "$REPO_SRC"/*.c "$REPO_SRC"/*.h "$REPO_SRC"/*.hpp; do
 done
 
 if [ "$fail" -eq 0 ]; then
-  echo "OK: all shared files are verbatim stock $LUA_VERSION except { $MODIFIED }"
+  echo "OK: all shared files are verbatim stock $LUA_VERSION"
 else
   echo "FAIL: the vendored core diverges from stock $LUA_VERSION in unexpected ways"
   exit 1

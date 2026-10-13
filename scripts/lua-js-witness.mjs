@@ -87,6 +87,8 @@ const cases = [
     eq('a loaded module is returned without a fetch, as require\'s one result; a require inside a C callback fails with the stock message plus the hint; a missing module fails',
       out[1].split('\n').slice(0, 2).join('\n'), 'true\t1\nfalse\ttrue\ttrue');
     check('the missing module\'s message is stock, with the fetch result appended', /^false\tmodule 'missing' not found:/.test(out[1].split('\n')[2]) && out[1].includes('HTTP 404'), out[1]);
+    check('the message lists package.cpath too, as stock does', out[1].includes("\n\tno file './missing.so'"), out[1]);
+    check('a dotted name adds the root-name cpath line; package.loaded[name] = false makes require load again', out[1].endsWith('(lua.js: missing.lua: HTTP 404)\ntrue\ntrue\ttrue\n'), JSON.stringify(out[1].slice(-160)));
     const errs = await p.errors();
     check('a src that does not exist reports on the page', errs.length === 1 && errs[0].includes('nowhere.lua: HTTP 404'), errs);
   }],
@@ -113,6 +115,9 @@ const cases = [
     await p.page.waitForFunction(() => window.__api && window.__api.done, null, { timeout: 60_000 });
     const r = await p.page.evaluate(() => window.__api);
     check('the page script ran to the end', !r.error, r.error);
+    check(`before Lua.ready every call refuses, even while a tag is yielding with the VM alive (${r.early.length} attempts)`,
+      r.early.length > 0 && r.early.every(m => m === 'lua.js: not ready yet (await Lua.ready)'), r.early.slice(0, 3));
+    check('and nothing from those calls landed in the tag\'s output', !(await p.outputs()).join('').includes('early'), await p.outputs());
     check('Lua.run from JavaScript prints to the console and sees the tags\' state', p.console.log.includes('to the console\tset by the tag'), p.console.log);
     eq('Lua.run throws with the Lua message', r.thrown, 'mine:1: from js');
     eq('Lua.on(\'print\') redirects, null restores', r.redirected.join(''), 'ab\n');

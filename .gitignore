@@ -11,3 +11,4 @@ src/lua
 src/luac
 build/
 node_modules/
+tests/time.txt
