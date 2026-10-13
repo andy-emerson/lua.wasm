@@ -37,7 +37,10 @@ const server = createServer(async (req, res) => {
     let body, type;
     if (path === '/lua.js') { body = await readFile(resolve(jsPath)); type = 'text/javascript'; }
     else if (path === '/lua.wasm') { body = await readFile(resolve(wasmPath)); type = 'application/wasm'; }
-    else if (/^\/pages\/[\w-]+\.html$/.test(path)) { body = await readFile(join(here, 'browser', path)); type = 'text/html'; }
+    else if (/^\/pages\/[\w./-]+$/.test(path) && !path.includes('..')) {
+      body = await readFile(join(here, 'browser', path));
+      type = path.endsWith('.html') ? 'text/html' : path.endsWith('.json') ? 'application/json' : 'text/plain';
+    }
     else { res.writeHead(404).end(); return; }
     res.writeHead(200, { 'content-type': type });
     res.end(body);
@@ -75,6 +78,16 @@ const cases = [
     eq('data-output="#id" prints into that element', await p.page.evaluate(() => document.getElementById('target').textContent), 'to target\n');
     check('data-output="console" prints to the console only', p.console.log.includes('to console'), p.console.log);
     eq('and nothing else is on the page', await p.outputs(), ['to page\n']);
+  }],
+  ['files', async (p) => {
+    const out = await p.outputs();
+    eq('src runs the file; its require fetches util.lua, whose own require fetches deep/helper.lua; data-files is readable',
+      out[0], 'main:\thello page (deep)\nlevels:\t[1,2,3]\nsecond require is the same table:\ttrue\n');
+    eq('a loaded module is returned without a fetch, as require\'s one result; a require inside a C callback fails with the stock message plus the hint; a missing module fails',
+      out[1].split('\n').slice(0, 2).join('\n'), 'true\t1\nfalse\ttrue\ttrue');
+    check('the missing module\'s message is stock, with the fetch result appended', /^false\tmodule 'missing' not found:/.test(out[1].split('\n')[2]) && out[1].includes('HTTP 404'), out[1]);
+    const errs = await p.errors();
+    check('a src that does not exist reports on the page', errs.length === 1 && errs[0].includes('nowhere.lua: HTTP 404'), errs);
   }],
   ['yield', async (p) => {
     eq('a yielding tag resumes each frame and finishes; the next tag waits', await p.outputs(), ['frame 1\nframe 2\nframe 3\nframe 4\nframe 5\ndone\n', 'second tag ran after\n']);

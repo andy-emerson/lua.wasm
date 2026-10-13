@@ -1,0 +1,22 @@
+<!doctype html>
+<!-- D8 rows 3 and 4: src="main.lua" runs a file; a module a script
+     requires is fetched lazily (and a module it requires in turn);
+     data-files puts data where io.open finds it; a require that cannot
+     yield (inside a C callback) and a module that does not exist report
+     the documented errors. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>files</title><script src="/lua.js"></script></head>
+<body>
+<script type="text/lua" src="main.lua" data-files="data/levels.json"></script>
+<script type="text/lua">
+  -- already loaded: no fetch, same table
+  print(require("util") == package.loaded.util, select("#", require("util")))
+  -- cannot yield from a C callback: the stock error, with the hint
+  local ok, err = pcall(table.sort, {3, 1, 2}, function (a, b) require "late" return a < b end)
+  print(ok, err:match("module 'late' not found") ~= nil, err:match("list it in data%-files") ~= nil)
+  -- a module that is not there
+  print(pcall(require, "missing"))
+</script>
+<script type="text/lua" src="nowhere.lua"></script>
+</body>
+</html>

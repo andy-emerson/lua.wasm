@@ -29,6 +29,50 @@
 
   const LUA_YIELD = 1;
 
+  // --- lazy require (D8 row 4) ----------------------------------------------
+  // A page cannot fetch synchronously, so a module that is not in the
+  // filesystem is fetched by yielding to the page: the script (a coroutine)
+  // yields FETCH..name, the page fetches name.lua beside itself into the
+  // filesystem and resumes with "ok" or an error. The search and the load
+  // are done in Lua rather than through the C require, whose lua_call
+  // boundary would stop a module's own require from yielding. What a
+  // program sees is require's contract: package.preload, package.path,
+  // one load per name, package.loaded, the loader's two results.
+  const FETCH = '\0lua.js:fetch:';
+  const REQUIRE_SHIM = `
+    local loaded, preload, searchpath = package.loaded, package.preload, package.searchpath
+    local function load_from(name, path)
+      local f, err = loadfile(path)
+      if not f then error("error loading module '" .. name .. "' from file '" .. path .. "':\\n\\t" .. err, 3) end
+      local r = f(name, path)
+      if r ~= nil then loaded[name] = r end
+      if loaded[name] == nil then loaded[name] = true end
+      return loaded[name], path
+    end
+    function require(name)
+      name = tostring(name)
+      local v = loaded[name]
+      if v ~= nil then return v end
+      local pre = preload[name]
+      if pre then
+        local r = pre(name, ":preload:")
+        if r ~= nil then loaded[name] = r end
+        if loaded[name] == nil then loaded[name] = true end
+        return loaded[name], ":preload:"
+      end
+      local path, err = searchpath(name, package.path)
+      if path then return load_from(name, path) end
+      local msg = "module '" .. name .. "' not found:\\n\\tno field package.preload['" .. name .. "']" .. err
+      if not coroutine.isyieldable() then
+        error(msg .. "\\n\\t(lua.js: cannot fetch from here; list it in data-files)", 2)
+      end
+      local answer = coroutine.yield("\\0lua.js:fetch:" .. name)
+      if answer ~= "ok" then error(msg .. "\\n\\t(lua.js: " .. tostring(answer) .. ")", 2) end
+      path, err = searchpath(name, package.path)
+      if not path then error(msg .. err, 2) end
+      return load_from(name, path)
+    end`;
+
   const state = {
     lua: null,
     exited: false,      // os.exit happened: every later entry refuses
@@ -82,35 +126,76 @@
     return '=' + (tag.id ? tag.id : `(lua script ${state.tags})`);
   }
 
-  function runTag(tag) {
+  // --- files (D8 rows 3, 4) ------------------------------------------------------
+  // fetch a URL relative to the page; returns bytes, or throws with the status
+  async function fetchBytes(url) {
+    const r = await fetch(new URL(url, document.baseURI));
+    if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
+    return new Uint8Array(await r.arrayBuffer());
+  }
+
+  // data-files="a.lua data/x.json": each fetched beside the page into the
+  // same path under /, before the tag runs
+  async function putFiles(tag, sink) {
+    const list = (tag.dataset.files || '').split(/\s+/).filter(Boolean);
+    for (const f of list) {
+      try {
+        const bytes = await fetchBytes(f);
+        const r = state.lua.fs.put('/' + f.replace(/^\.?\//, ''), bytes);
+        if (r !== 0) throw new Error(`${f}: cannot put into the filesystem (${r})`);
+      } catch (e) { sink.error(`lua.js: data-files: ${e.message}\n`); }
+    }
+  }
+
+  // the module name a script asked for, fetched as name/with/slashes.lua
+  // beside the page and put where package.path's ./?.lua finds it
+  async function fetchModule(name) {
+    const rel = name.replace(/\./g, '/') + '.lua';
+    const bytes = await fetchBytes(rel);
+    const r = state.lua.fs.put('/' + rel, bytes);
+    if (r !== 0) throw new Error(`${rel}: cannot put into the filesystem (${r})`);
+  }
+
+  async function runTag(tag) {
     const lua = state.lua;
     const sink = makeSink(tag);
     state.sink = sink;
     if (state.exited) {
       sink.error(`VM exited (status ${state.exitCode}); this script did not run\n`);
-      return Promise.resolve();
+      return;
     }
     const stdin = stdinFor(tag);
     lua.setStdin(stdin === null ? '' : stdin);
     lua.setPrompt(stdin === null ? () => window.prompt('Lua is reading from stdin:') : null);
-    const name = chunkName(tag);
-    const source = tag.textContent;
-    return new Promise((done) => {
-      let status;
-      try {
-        status = lua.start(source, name);
-        if (status !== 0) { sink.error(lua.lastError() + '\n'); done(); return; }
-      } catch (e) { trapped(e, sink); done(); return; }
-      const step = () => {
-        let s;
-        try { s = lua.step(); }
-        catch (e) { trapped(e, sink); done(); return; }
-        if (s === LUA_YIELD) { requestAnimationFrame(step); return; }
-        if (s !== 0) sink.error(lua.lastError() + '\n');
-        done();
-      };
-      step();
-    });
+    await putFiles(tag, sink);
+    let name, source;
+    if (tag.src) {
+      name = '@' + tag.src.split('/').pop();
+      try { source = new TextDecoder().decode(await fetchBytes(tag.src)); }
+      catch (e) { sink.error(`lua.js: src: ${e.message}\n`); return; }
+    } else {
+      name = chunkName(tag);
+      source = tag.textContent;
+    }
+    let s;
+    try { s = lua.start(source, name); }
+    catch (e) { trapped(e, sink); return; }
+    if (s !== 0) { sink.error(lua.lastError() + '\n'); return; }
+    let answer = null;                     // what the next resume hands to yield
+    for (;;) {
+      try { s = lua.step(answer); }
+      catch (e) { trapped(e, sink); return; }
+      answer = null;
+      if (s !== LUA_YIELD) break;
+      const msg = lua.message();
+      if (msg !== null && msg.startsWith(FETCH)) {
+        try { await fetchModule(msg.slice(FETCH.length)); answer = 'ok'; }
+        catch (e) { answer = e.message; }
+      } else {
+        await new Promise(requestAnimationFrame);
+      }
+    }
+    if (s !== 0) sink.error(lua.lastError() + '\n');
   }
 
   // os.exit (and abort) leave the VM as a trap; record and refuse from now on
@@ -135,6 +220,7 @@
     state.lua = lua;
     const r = lua.init();
     if (r !== 0) throw new Error(`luaw_init failed: ${r}`);
+    if (lua.run(REQUIRE_SHIM, '=lua.js') !== 0) throw new Error('require shim: ' + lua.lastError());
     const tags = Array.from(document.querySelectorAll('script[type="text/lua"]'));
     for (const tag of tags) await runTag(tag);
   }
