@@ -27,6 +27,37 @@ of what it decided.
 | Binaryen inlining limits (`-fimfs=40 -ocimfs=30` and `-fimfs=10 -ocimfs=8` against the defaults) | neutral: Chromium, 10 rounds, work only — `fib` 0.90× and 0.87× of Wasmoon against 0.87× at the defaults, every other workload within noise, +1.8 KB and +0.5 KB. The one unswept lever the literature named (an FSE 2023 study found counter-intuitive inlining effects in half its programs); it does not move an interpreter whose hot loop is one function |
 | Forbidding Binaryen from inlining the catch wrapper | neutral; the inlined copies land in the eight small protected-call entry points, never the VM loop, which the EH check asserts |
 
+## The VM loops side by side
+
+Both modules disassembled with Binaryen (`wasm-dis`), the largest
+function in each being `luaV_execute`. Wasmoon 1.16.0 is Lua 5.4 built
+by `emcc -O3` from separate source files with `emmalloc`, errors
+routed through JavaScript (`invoke_vii`, `_emscripten_throw_longjmp`),
+no wasm EH. The loops are the same size (17,045 and 16,315 lines of
+text) and differ in three visible ways; each was then built and
+measured as a variant of our module (Chromium 141, 10 rounds, every
+variant passing the interface witness):
+
+| difference | in the shipped loop | variant | `fib` vs Wasmoon | other workloads |
+|---|---|---|--:|---|
+| **builtins**: Wasmoon's loop has 23 inline `f64.floor`; ours calls musl's `floor` 22 times and `memcpy` for small copies, because zig's `wasm32-freestanding` target passes `-ffreestanding`, which disables builtin recognition. `-fno-math-errno` alone is inert there (module byte-identical) | calls | `-fhosted` under zig (floor inline, small `memcpy` inlined) | 0.83× (one run; the reference measured 0.95× in the same run — noise at this size) | within noise; module −0.7 KB |
+| **compiler**: Emscripten's clang is an LLVM main snapshot at `-O3`; zig hands clang `-O2` | clang 20.1.2 `-O2` | Ubuntu clang 18 `-O2` / `-O3` | 0.91× / 0.88× | `-O3` loop 30% larger, nothing faster |
+| **translation units**: ours is one unit (`onelua.c`, `LUAI_FUNC` static), so clang inlines the call path into the loop (6 indirect calls and 47 loops inside it against 0 and 25 in Wasmoon's) | inlined | each Lua file compiled separately, as Wasmoon builds | 0.92× | `frame` 40% slower, `string` 10% slower; module 87 KB smaller |
+| reference | — | the shipped build in the same session | 0.92×, 0.95× | — |
+
+No variant moves `fib`, so the compiler version, the optimization
+level, builtin lowering and the translation-unit structure are all
+ruled out as the cause. The earlier claim in this record that the zig
+driver "changes nothing" was wrong in one respect: `-O` levels are
+byte-identical, but the driver's `-ffreestanding` turns `floor`, `fmod`
+and small `memcpy` into calls throughout the module. `-fhosted` undoes
+that in one flag and every witness passes with it; the suite has no
+floating-point workload that would show the difference, and the one
+run above does not justify a claim either way, so it is not adopted
+here and is recorded as the one flag worth carrying when a numeric
+workload joins the benchmark (a decision for the Human: adding a
+workload changes what the benchmark claims).
+
 ## What the literature settled without a trial
 
 - **Tail-call dispatch**: measured +12% in a 2023 V8 micro-harness but 1.2× slower in Firefox 149 and 3.7× slower in Chrome 146 for a 2026 interpreter, attributed to the engines' 6/8-register argument ABI; CPython under Emscripten saw "no speedup, up to 2× slowdown". Not worth building.
@@ -39,7 +70,7 @@ of what it decided.
 
 ## Open
 
-- The remaining `fib` gap to Wasmoon (0.87× Chromium, 0.88× WebKit) is unexplained. What it is not: the interpreter source (verbatim in both), the optimizer level (`-O2`/`-O3`/`-Os` within 1%), the compiler driver (zig hands clang `-O2`, objects byte-identical), Binaryen's inlining limits (swept, neutral), or EH landing pads in the loop (fixed this round; it was the cause of the larger baseline gap). The allocator is not in play: `fib` allocates nothing. The unexamined evidence is the compiled output: a side-by-side of `luaV_execute` and the call path in the two modules would show whether the difference is instruction selection, inlining decisions or Emscripten's `wasm-opt` pass list, and either name a flag or close the question.
+- The remaining `fib` gap to Wasmoon (0.87× Chromium, 0.88× WebKit) is unexplained after the side-by-side below ruled out every build-configuration cause that could be flipped. The allocator is not in play: `fib` allocates nothing. What is left is the engines' treatment of the two loops themselves (register allocation and layout of a 1.5 MB-of-text function), which a flag cannot reach.
 - A reproducer and bug report for SpiderMonkey's throw cost.
 - Per-phase start-up timing (decode, compile, instantiate, `_initialize`, the zone file, the first tag) — no published numbers exist for 300–600 KB modules; ours would be first.
 - The allocator comparison the literature lacks, on our own harness, if a workload ever shows the allocator.
