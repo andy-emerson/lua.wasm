@@ -262,7 +262,31 @@ liblua.a:
 # builds build/musl/libc.a; the artifact targets that use it follow.
 include port/musl.mk
 
+# The browser-native artifact, under its pre-cutover name (merge 2 of the
+# plan in doc/history/browser-native-2026-10-13.md builds it beside the WASI
+# artifacts above; merge 3 renames it to lua.wasm and removes them).
+# Stock Lua 5.4.8, compiled as C++ for wasm exception handling exactly as
+# the WASI build is, against musl's public headers; -DLUA_USE_LINUX so the
+# libc feature set (POSIX popen/dlopen entry points, isatty) matches the
+# native musl oracle the differential test compares against; -DLUAW_MUSL
+# drops the wasi-libc patches in onelua.c. Linked with the OS layer and
+# libc from port/musl.mk through the C++ driver, which supplies compiler-rt.
+WASM_NEXT_O= lua-next.wasm
+WASM_NEXT_CFLAGS= --target=wasm32-freestanding $(MUSL_SYSINC) -O2 -fno-strict-aliasing \
+	  -fwasm-exceptions -nostdlib++ -Isrc \
+	  -DLUA_USE_LINUX -DLUA_USE_JUMPTABLE=0 -DLUAW_MUSL \
+	  -DMAKE_LIB -DMAKE_REACTOR \
+	  $(WASM_EH_ENC_FLAGS) $(WASM_EXTRA)
+
+$(MUSL_BUILD)/onelua-next.o: src/onelua.c $(MUSL_GENH)
+	$(WASM_CLANGXX) $(WASM_NEXT_CFLAGS) -c -x c++ $< -o $@
+
+$(WASM_NEXT_O): $(MUSL_BUILD)/onelua-next.o $(MUSL_RT) $(MUSL_A)
+	$(WASM_CLANGXX) $(MUSL_LDFLAGS) $(MUSL_RT) $(MUSL_BUILD)/onelua-next.o $(MUSL_A) -o $@
+
+wasm-next: $(WASM_NEXT_O)
+
 # list targets that do not create files (but not all makes understand .PHONY)
-.PHONY: all $(PLATS) clean test install uninstall local none dummy echo pc wasm liblua.a
+.PHONY: all $(PLATS) clean test install uninstall local none dummy echo pc wasm liblua.a wasm-next
 
 # (end of Makefile)

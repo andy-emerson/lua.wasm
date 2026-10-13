@@ -31,7 +31,7 @@ MUSL_AR?= $(WASM_AR)
 
 MUSL_SRCDIRS= string ctype math stdio stdlib time locale errno exit env \
   internal malloc malloc/mallocng fcntl unistd stat misc prng multibyte \
-  signal thread mman dirent fenv
+  signal thread mman dirent fenv ldso process temp
 MUSL_EXCLUDE= $(MUSL_DIR)/src/thread/__unmapself.c
 MUSL_SRCS= $(filter-out $(MUSL_EXCLUDE),\
   $(foreach d,$(MUSL_SRCDIRS),$(wildcard $(MUSL_DIR)/src/$(d)/*.c)))

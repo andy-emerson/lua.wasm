@@ -174,6 +174,12 @@ _Noreturn void __wasm_longjmp (void *env, int val) {
 
 #endif /* __cplusplus */
 
+/* The hosted-libc corners below patch wasi-libc. The musl build
+   (-DLUAW_MUSL, port/musl.mk) takes musl's own answers unmodified: its
+   reference behaviour is Lua 5.4.8 on musl Linux, bugs included
+   (doc/history/browser-native-2026-10-13.md). */
+#if !defined(LUAW_MUSL)
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -255,6 +261,7 @@ char *setlocale (int category, const char *locale) {
 }  /* extern "C" */
 #endif
 
+#endif /* !LUAW_MUSL */
 
 #endif /* __wasm__ */
 
