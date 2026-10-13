@@ -26,7 +26,7 @@ const enc = new TextEncoder();
 // numeric formatting, and literals.lua asserts the decimal point changed
 // after a successful setlocale -- native Lua on musl fails that assert too.
 // The prelude tells the suite the locale is unavailable; the artifact is
-// unmodified musl behaviour. scripts/suite-bundle.py carries the same text.
+// unmodified musl behaviour. The suite and browser witnesses both use it.
 export const LOCALE_PRELUDE =
   "do local sl = os.setlocale os.setlocale = function (l, c) " +
   "if l ~= nil and l ~= '' and l ~= 'C' and l ~= 'POSIX' then return nil end " +

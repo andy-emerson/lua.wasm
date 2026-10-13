@@ -153,16 +153,16 @@ Conventions settled alongside, now design:
 | **D3** | `os.exit` | Flush stdio, record the code (`luaw_exit_code`), trap. The one thing that unwinds into the host; every later `luaw_*` call refuses with "VM exited". | Exit as a thrown exception (Lua's catch-all would swallow it, so `pcall(os.exit)` would survive); disabling `os.exit` (not stock). |
 | **D4** | Files | An in-memory filesystem inside the module (`/` is the working directory; no persistence), filled and drained through the `luaw_fs_*` exports. Pyodide and Wasmoon both keep files in memory. *Corrected in merge 2:* directories are entries, not path prefixes — the official suite requires `fopen("")` to fail and creating a file in a missing directory to fail with `ENOENT`, as Linux does; `/` and `/tmp` exist from the start, `luaw_fs_put` creates parents, `luaw_fs_mkdir` is the host's `mkdir -p`. | Host-backed folders through a file import — the one real use is a portable `lua` command reading real disk. Reopen if that use case appears. |
 | **D5** | Local time, environment | musl's stock handling: `TZ` or `/etc/localtime`, else UTC. The environment starts empty; hosts add to it with `luaw_setenv`. `lua.js` will generate the visitor's zone file from the browser's own rules (merge 4); until then hosts supply `TZ` or a zone file. Needs file-backed `mmap` in the syscall layer (musl memory-maps zone files). | A time-zone import (modifies musl); shipping the tz database (size, upkeep). |
-| **D6** | Removals | `lua-lib.wasm` as a separate artifact; the WASI build and runners; the link-Lua-in shape (`liblua.a`, `examples/embed/`, `doc/embedding.md`, `WASM_EH=external`); the unused C sjlj path; the `onelua.c` WASI workarounds (`tmpnam`, `tmpfile`, `fopen("")`, `setlocale`, `system`); the legacy EH encoding (per D9). Deep-witness is retargeted, not removed. | Each gets a removal record with its reopen condition when it goes (merge 3). |
+| **D6** | Removals | `lua-lib.wasm` as a separate artifact; the WASI build and runners; the link-Lua-in shape (`liblua.a`, `examples/embed/`, `doc/embedding.md`, `WASM_EH=external`); the unused C sjlj path; the `onelua.c` WASI workarounds (`tmpnam`, `tmpfile`, `fopen("")`, `setlocale`, `system`); the legacy EH encoding (per D9). Deep-witness is retargeted, not removed. *Done in merge 3*: the removal record with each item's reopen condition is [`wasi-sunset-2026-10-13.md`](wasi-sunset-2026-10-13.md). | See the removal record. |
 | **D7** | stdin | The host plays the environment: the `read` import answers with typed text, piped data or end of input (0). Stock `io.read` throughout; stock interactive `lua` works under Node through `luaw_main`. | Always-empty stdin and pre-supplied-only stdin (each hard-wires one environment into the module). |
 | **D8** | `lua.js` defaults | **Open** — decided before merge 4. | |
 | **D9** | Supported runtimes | Standard EH encoding only. Floors (webassembly.org feature data, `exceptionsFinal`): Chrome 137, Firefox 131, Safari 18.4, Node 24.15, Deno 2.3.2, wasmtime 47. CI: current Chromium, Firefox, WebKit; Node ≥ 24.15. | Shipping the legacy encoding too (deprecated; a documented V8 12.x host crash; untestable old Safari). Reopen if real users turn up on older devices. |
-| **D10** | How it lands | Four merges: (1) this record and vendored musl; (2) the new artifact built and tested beside today's; (3) the cutover and removals; (4) `lua.js`. | One or two large merges. |
+| **D10** | How it lands | Four merges: (1) this record and vendored musl; (2) the new artifact built and tested beside today's; (3) the cutover and removals; (4) `lua.js`. *Merges 1–3 landed 2026-10-13; 4 waits on D8 (issue #52).* | One or two large merges. |
 
-Deferred, recorded as open work: a non-JavaScript host test (wasmtime)
-— "runs in any wasm host" is not claimed until one exists; D8; a
-reproducible benchmark against Wasmoon in the repo (the numbers above are
-session observations).
+Deferred, recorded as open work: a non-JavaScript host test (wasmtime,
+issue #53) — "runs in any wasm host" is not claimed until one exists; D8
+(issue #52); a reproducible benchmark against Wasmoon in the repo (issue
+#54; the numbers above are session observations).
 
 ## What this does not change
 

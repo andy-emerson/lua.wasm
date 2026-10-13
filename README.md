@@ -1,72 +1,80 @@
 # lua.wasm
 
-**Embeddable Lua 5.4 for WebAssembly — the reference interpreter, in one artifact.**
+**Stock Lua 5.4 for the browser — the reference interpreter on musl, in one WebAssembly module.**
 
-lua.wasm is [PUC-Rio Lua](https://www.lua.org) 5.4.8 built to run inside a WebAssembly host: the stock interpreter in a single `.wasm` module you embed. If you have a wasm host and need a Lua VM in it, this is built for you.
+lua.wasm is [PUC-Rio Lua](https://www.lua.org) 5.4.8, verbatim, compiled on upstream [musl](https://musl.libc.org) 1.2.6, verbatim, into a single `lua.wasm` that a plain web page can instantiate: three small imports, no WASI, no Emscripten, no special headers. If you want the real Lua in a browser — or in Node, or in any host that can supply three functions — this is built for you.
 
 ## Why you'd want it
 
-There is no LuaJIT for WebAssembly, and there can't be one as it stands: wasm forbids runtime code generation (no JIT), and LuaJIT's interpreter is hand-written per-architecture assembly with no wasm backend (no fallback). Every Lua-in-wasm is therefore interpreter-class. lua.wasm owns that instead of hiding it — the stock, well-maintained Lua 5.4 interpreter, in a wasm module built to be a good citizen of its host:
+There is no LuaJIT for WebAssembly, and there can't be one as it stands: wasm forbids runtime code generation (no JIT), and LuaJIT's interpreter is hand-written per-architecture assembly with no wasm backend (no fallback). Every Lua-in-wasm is therefore interpreter-class. lua.wasm owns that and makes the stock interpreter a good citizen of the browser:
 
-- **Interpreter for dynamic code.** Code that arrives at runtime runs on the stock, well-maintained Lua 5.4 interpreter.
-- **One artifact.** One build produces one `.wasm` module, not a constellation of glue files.
-- **Plain clang / WASI. No Emscripten.** Lua is portable C and needs no platform emulator. Error handling rides the WebAssembly exception-handling proposal — the artifact compiles as C++ to reach it — so there's no setjmp/longjmp emulator in the way.
-- **The VM never blocks.** The host calls in and always gets control back. A long-lived program (a game's main loop) runs as a Lua coroutine that yields once per frame — no threads, no SharedArrayBuffer, no Asyncify.
-- **Not a dialect.** It tracks Lua 5.4.8 and stays bit-compatible with upstream. Language changes are out of scope.
+- **Not a dialect, not a port.** Lua is verbatim 5.4.8 and the C library under it is verbatim musl; the reference behaviour is *stock Lua 5.4.8 on musl Linux, bugs included*, and a differential witness holds the artifact to it byte for byte. Language changes are out of scope.
+- **One artifact, three imports.** `lua.wasm` imports `luaw.write` (stdout/stderr), `luaw.now` (the clock) and `luaw.read` (stdin), nothing else. The OS Lua expects — stdio, a clock, files, environment, `exit` — lives inside the module on the Linux syscall interface musl already speaks. No WASI emulation layer to copy into your page.
+- **A plain page is enough.** No cross-origin isolation (no COOP/COEP headers), no SharedArrayBuffer, no workers, no Emscripten runtime. A static file server and a `<script type="module">` instantiate it; the browser witness asserts `crossOriginIsolated === false`.
+- **Errors stay inside.** Lua's error handling rides the standard WebAssembly exception-handling instructions — the artifact compiles as C++ to reach them — so `pcall` never round-trips through JavaScript and no setjmp/longjmp emulator is in the way.
+- **The VM never blocks.** The host calls in and always gets control back. A long-lived program (a game's main loop) runs as a Lua coroutine the host resumes once per frame, exchanging a string message each way.
 
 ## Where it stands
 
-lua.wasm is honest about maturity, so you can trust what it claims.
+lua.wasm is honest about maturity, so you can trust what it claims. Every claim below names its witness; the witnesses run on the release form of the file, so what is tested is what ships.
 
-- **Solid today (verified here):** the native interpreter runs the **full official Lua 5.4 test suite** under the ltests-instrumented build — checked allocator, internal assertions, the C-API battery — passing cleanly.
-- **CI-enforced (re-witnessed on every change** by [`.github/workflows/witness.yml`](.github/workflows/witness.yml)**):** the vendored core is verbatim stock 5.4.8 outside one declared file (`scripts/verify-stock.sh`); the native ltests-instrumented interpreter passes the **full** official suite — the C-API `testC` battery included, with `tests/libs` built and zero skips; the wasm interpreter passes the **full official suite on two engines** — wasmtime (the first non-V8 engine to run lua.wasm) and Node 24.15+ (V8, default-on exnref) — plus the suite-prefix witness **in three real browser engines** — Chromium (V8 as browsers ship it), Firefox 151 (SpiderMonkey), and WebKit 26.5 (JSC family) — driven via Playwright by `scripts/browser-witness.mjs`, which refuses to report a pass unless the page truly ran in the named engine; the embeddable reactor passes its host-interface witness (`scripts/embed-demo.mjs`) and a 12-check stress battery (`scripts/reactor-stress.mjs`: contained stack overflow, mid-flight program death and replacement, a 50k-frame pump, GC under allocation pressure); and the link-Lua-in consumer shape passes both its witnesses (`examples/embed/`) — a plain-C downstream driving embedded Lua and catching a Lua error across the wasm-EH boundary, plus a C++ downstream catching its own **typed** exception through a real wasm-EH libc++abi with the bundled shim suppressed (`WASM_EH=external`).
-- **Witnessed on demand and on every release tag (**[`deep-witness.yml`](.github/workflows/deep-witness.yml)**):** the artifact builds and passes the full suite on both engines under plain llvm.org clang-20 with Makefile defaults. This re-runs when dispatched and on every release tag, not on every push — the heavy tier is deliberate, not continuous.
-- **A host-crash on old V8, resolved by engine version:** an external bring-up audit (love-wasi, 2026-07-05, against pin `945f810`) found the suite's to-be-closed/coroutine region **segfaulting the host process** on Node 22. Cross-checking against wasmtime and Chromium 141 shows it to be a V8 12.x-era engine defect (both its EH paths), fixed in current V8: the same artifact and test pass clean there. The artifact was never at fault. Engines in that window (Node 22/23) remain exposed — current Node 22 LTS (22.22.2) now *compiles* the artifact and still crashes the same way (re-witnessed 2026-07-06). Separately, Node 24.0–24.14 refuse the standardized encoding without `--experimental-wasm-exnref`; 24.15 is the first to take it by default, so the floor is stated precisely as **Node ≥ 24.15**. Full triage in [`doc/history/wasm-audit-2026-07-05.md`](doc/history/wasm-audit-2026-07-05.md) and its 2026-07-06 addendum.
+- **CI-enforced (re-witnessed on every change** by [`witness.yml`](.github/workflows/witness.yml)**):** the vendored Lua core is verbatim stock 5.4.8 outside one declared file (`scripts/verify-stock.sh`) and the vendored musl is the signed 1.2.6 release (`scripts/verify-musl.sh`); the native ltests-instrumented interpreter passes the **full** official suite, C-API battery included, with zero skips; `lua.wasm` passes the host-interface witness (`scripts/interface-witness.mjs`: every import and export, the exit path, the message channel, and an adversarial battery — contained stack overflow, mid-flight program death and replacement, a 50k-frame pump, GC under allocation pressure), the **full official suite in portable mode** through stock `lua.c` under Node 24 (`scripts/suite-witness.mjs`), the same full suite **in three real browser engines** — Chromium, Firefox and WebKit, from a plain page, driven via Playwright by `scripts/browser-witness.mjs`, which refuses to report a pass unless the page truly ran in the named engine — and the **differential witness** (`scripts/differential.sh`): a corpus of scripts run on the artifact and on native Lua 5.4.8 built for x86_64-linux-musl must produce byte-identical stdout, stderr and exit status. The libc alone passes a smoke witness (printf/strtod exactness, errno, locale, stdin) and a 300,000-operation allocator stress with memory reuse.
+- **Witnessed on demand and on every release tag (**[`deep-witness.yml`](.github/workflows/deep-witness.yml)**):** the same artifact built under plain llvm.org clang-20 with the Makefile defaults passes the interface, suite and differential witnesses — the build is not tied to one compiler driver. Retargeted at the cutover and not yet run on the musl build; its first green is this claim's evidence.
+- **Stated, not yet witnessed:** the runtime floors. The artifact uses only the standard exception-handling encoding, which [webassembly.org's feature data](https://webassembly.org/features/) puts in Chrome 137, Firefox 131, Safari 18.4 and Node 24.15; CI runs current engines, not the floors. The browser size for this build is 400,450 bytes (123,706 brotli; zig 0.15.1, binaryen 132, measured at the commit that cut over).
+- **Known and intended:** `os.setlocale("pt_BR")` returns `"pt_BR"` and keeps the `.` decimal point (musl implements no locale-specific numeric formatting; native Lua on musl does the same), so the official suite runs with a documented `LUA_INIT` prelude that reports the locale unavailable; `io.popen` and `os.execute` fail as on a machine with no shell; files live in memory inside the module and do not persist.
 
-Every claimed path is witnessed: the interpreter paths (native, wasmtime, Node, browser, reactor) and the vendored-core provenance continuously on every change.
-
-**In progress — a browser-native artifact.** The artifact above is built for WASI; a browser can only run it through a WASI emulation layer, which is the wrong interface for the stated purpose. The replacement runs stock Lua on upstream **musl** with three plain imports (`write`, `now`, `read`) and no Emscripten, and lands in four merges ([`doc/history/browser-native-2026-10-13.md`](doc/history/browser-native-2026-10-13.md) has the decisions, their options and the spike evidence). Two are in. [`third_party/musl`](third_party/musl) is verbatim signed **musl 1.2.6**, checked on every change by [`scripts/verify-musl.sh`](scripts/verify-musl.sh), with [`musl-upstream.yml`](.github/workflows/musl-upstream.yml) flagging a newer signed release weekly. And **`lua-next.wasm`** — stock Lua 5.4.8 on that musl, compiled for wasm32 by [`port/musl.mk`](port/musl.mk) with the OS under it in [`port/`](port/) — builds beside the WASI artifacts and is **CI-witnessed on every change** (`witness.yml`, jobs `next` and `next-browser`): it imports exactly `luaw.{write,now,read}`; passes the **full official suite** through stock `lua.c` under Node 24 and in **Chromium, Firefox and WebKit** from a plain page with no special headers; is **byte-identical to native Lua 5.4.8 on musl** across a differential corpus (stdout, stderr, exit status); and passes its host-interface witness and the libc's own smoke and allocator-stress witnesses. Release form 400,450 bytes (123,706 brotli), measured at build. It is not released and not yet `lua.wasm`: the cutover (merge 3) and the `lua.js` loader (merge 4) follow. [`doc/wasm.md`](doc/wasm.md#the-browser-native-artifact-lua-nextwasm-pre-cutover) has the contract and the witnesses.
+Two things lua.wasm does not try to be: a rich JavaScript ↔ Lua object bridge (Wasmoon owns that; the interop here is enough to be useful, not a parity goal) and a build for engines older than the standard encoding.
 
 ## Build and run
 
-Toolchain: **clang 20+** with a wasi-libc sysroot (the standardized wasm-EH encoding needs LLVM 20; `zig c++` works as a self-contained clang-20+ — recipe in the Makefile). clang 18/19 can still build the pre-standard encoding via `WASM_EH_ENCODING=legacy`, at the cost of every non-V8 runtime. Running the artifact needs a WASI host with wasm exception handling — **Node ≥ 24.15** (24.0–24.14 only with `--experimental-wasm-exnref`), a current browser, or **wasmtime** (`scripts/wasmtime-run.py`).
+Toolchain: **clang 20+** (the standard exception-handling encoding needs LLVM 20) with its wasm32 compiler-rt builtins, and Binaryen's `wasm-opt` for the release form. No sysroot: the libc is the vendored musl, built by the same `make`. `zig` 0.15.1 is a self-contained clang 20.1.2 that brings the builtins along, and is what CI uses:
 
 ```bash
-make wasm                                 # -> lua.wasm (the interpreter, as wasm)
-node scripts/wasm-run.mjs lua.wasm script.lua
+pip install ziglang==0.15.1 && npm i binaryen@132.0.0
+make wasm WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar" \
+          WASM_CLANGXX="python3 -m ziglang c++" \
+          WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling" \
+          WASM_OPT=node_modules/binaryen/bin/wasm-opt      # -> lua.wasm
+node scripts/lua.mjs lua.wasm -- script.lua                 # the lua command line, under Node
 ```
+
+Plain clang-20 builds with the Makefile defaults: `make wasm MUSL_AR=llvm-ar-20`. Running the artifact needs a host with the standard wasm exception handling: a current browser, or **Node ≥ 24.15** (24.0–24.14 only with `--experimental-wasm-exnref`).
 
 The native toolchain works as usual: `make guess` builds `src/lua` and `src/luac`.
 
-[`doc/wasm.md`](doc/wasm.md) is the operational reference for the wasm build: the `WASM_EH` exception-handling runtime knob (internal shim vs. an external libc++abi for embedders needing typed catches), running the official test suite under wasm (`_port=true`), and the sharp edges.
+[`doc/wasm.md`](doc/wasm.md) is the operational reference: what the module is made of, the host contract in full, running the official suite, the witnesses, and the sharp edges.
 
 ## Embed
 
-`make wasm-lib` builds `lua-lib.wasm`, a wasm *reactor*: the host instantiates it, calls in, and always gets control back. The interface is WASI (stdio arrives as `fd_write`; hook fds 1 and 2 to capture `print`) plus these exports:
+The host instantiates `lua.wasm` with three imports in module `luaw` and drives it through these exports; every call returns, and no call blocks:
 
 | export | contract |
 | - | - |
 | `luaw_init()` | create the VM (stdlib); 0 on success |
-| `luaw_alloc(n)` / `luaw_free(p)` | buffers for passing chunks in |
+| `luaw_alloc(n)` / `luaw_free(p)` | buffers for passing chunks and strings in |
 | `luaw_run(ptr, len, name)` | load + run a chunk to completion; returns a Lua status code (0 = ok) |
 | `luaw_start(ptr, len, name)` | load a chunk as the resident program (a coroutine) |
-| `luaw_step()` | resume it one step: `LUA_YIELD` (1) = alive, call again next frame; 0 = finished; else failed |
+| `luaw_step(msg, len)` | resume it one step with a message; `LUA_YIELD` (1) = alive, call again next frame; 0 = finished; else failed |
+| `luaw_message(len_out)` | what the program `coroutine.yield`ed last, or null |
 | `luaw_last_error()` | the last error message, or null; valid until the next entry call |
+| `luaw_main(argc, argv)` | stock `lua.c`: the whole `lua` command line, arguments and all |
+| `luaw_setenv(name, value)` | set (or, with null, remove) an environment variable; the environment starts empty |
+| `luaw_fs_put/get/remove/list/mkdir` | the in-memory filesystem: `/` is the working directory, `/tmp` exists; `put` creates parents |
+| `luaw_exit_code()` | after `os.exit`: its status |
 
-Errors never unwind into the host, and no call blocks. [`scripts/embed-demo.mjs`](scripts/embed-demo.mjs) is the reference host and the witness for the whole interface; [`scripts/reactor-stress.mjs`](scripts/reactor-stress.mjs) is its adversarial counterpart (contained stack overflow, mid-flight death and replacement, 50k-frame pump, GC pressure). Both run in CI.
-
-That is one consumer shape — a host *wrapping* the finished module. The other is a **C/C++ project targeting wasm32-wasi that links Lua *in***, driving it through `lua.h` inside its own artifact (the shape love-wasm uses). [`doc/embedding.md`](doc/embedding.md) is the contract for it — the flag requirements, the source-drop and `make liblua.a` paths, and the internal-vs-external exception runtime. [`examples/embed/`](examples/embed/) is the worked, CI-run witness: a plain-C downstream that links Lua in, drives embedded Lua, and catches a Lua error across the boundary.
+`os.exit` flushes stdio, records its status and traps — the one thing that unwinds into the host; `pcall` cannot intercept it, and every later entry call refuses with "VM exited". [`scripts/host.mjs`](scripts/host.mjs) is a host in plain JavaScript (the Node witnesses and the browser page share it) and the reference for calling all of this; [`scripts/browser/lua-page.html`](scripts/browser/lua-page.html) is the browser page. A `lua.js` loader for `<script type="text/lua">` is the next milestone ([#52](https://github.com/andy-emerson/lua.wasm/issues/52)).
 
 ## Contributing
 
-How work is planned, done, and reviewed here is the working agreement in [`AGENTS.md`](AGENTS.md) — vendored verbatim from [andy-emerson/working-agreement](https://github.com/andy-emerson/working-agreement) (CC BY 4.0; the version rides in its front matter, updated by replacing the file). Open work — todos, bugs, open decisions — lives in [GitHub Issues](https://github.com/andy-emerson/lua.wasm/issues); the design lives in [`doc/`](doc/) (`wasm.md`, `embedding.md`), with dated records under [`doc/history/`](doc/history/). The vendored Lua core is verbatim stock 5.4.8 except `luac.c`, enforced by [`scripts/verify-stock.sh`](scripts/verify-stock.sh) — read its header before touching `src/`. The vendored C library is verbatim signed musl 1.2.6, enforced by [`scripts/verify-musl.sh`](scripts/verify-musl.sh) — its header has the refresh steps.
+How work is planned, done, and reviewed here is the working agreement in [`AGENTS.md`](AGENTS.md) — vendored verbatim from [andy-emerson/working-agreement](https://github.com/andy-emerson/working-agreement) (CC BY 4.0; the version rides in its front matter, updated by replacing the file). Open work — todos, bugs, open decisions — lives in [GitHub Issues](https://github.com/andy-emerson/lua.wasm/issues); the design lives in [`doc/`](doc/) (`wasm.md`), with dated records under [`doc/history/`](doc/history/) — the browser-native design and its decisions in [`browser-native-2026-10-13.md`](doc/history/browser-native-2026-10-13.md). The vendored Lua core is verbatim stock 5.4.8 except `luac.c`, enforced by [`scripts/verify-stock.sh`](scripts/verify-stock.sh); the vendored musl is verbatim 1.2.6, enforced by [`scripts/verify-musl.sh`](scripts/verify-musl.sh) — read their headers before touching `src/` or `third_party/musl/`. Everything of this project's own is in `port/` (the musl arch and the OS under it), `src/onelua.c` (the amalgamation and the `luaw_*` interface) and `scripts/`.
 
 ### Building
 
 ```bash
 make guess       # native: src/lua, src/luac
 make lua-debug   # the ltests-instrumented witness build
-make wasm        # -> lua.wasm  (needs clang 20+ / zig c++; recipe in the Makefile header)
+make wasm ...    # -> lua.wasm (toolchain variables as above; recipe in the Makefile header)
+make oracle      # -> build/lua-musl, native Lua 5.4.8 on musl, the differential's reference
 ```
 
 ### Testing — the witnesses
@@ -77,17 +85,20 @@ A change is done when the witnesses covering it are green, not when it compiles:
 # deepest: full official suite on the ltests build
 # (C-API battery needs tests/libs built; stdin must be non-seekable)
 make -C tests/libs LUA_DIR=../../src
-cd tests && : | ../lua-debug all.lua                              # expect 'final OK !!!', zero 'testC not active'
+cd tests && : | ../lua-debug all.lua                 # expect 'final OK !!!', zero 'testC not active'
 
-# the wasm artifact, both engines
-cd tests && node ../scripts/wasm-run.mjs ../lua.wasm -e"_port=true" all.lua
-cd tests && python3 ../scripts/wasmtime-run.py ../lua.wasm -e"_port=true" all.lua
+# the artifact
+make libc-smoke libc-stress ...                      # the libc alone
+node scripts/interface-witness.mjs lua.wasm          # the host contract, 70 checks
+node scripts/suite-witness.mjs lua.wasm tests        # full official suite, port mode, Node
+node scripts/browser-witness.mjs lua.wasm --engine chromium   # and firefox, webkit (needs playwright)
+make differential ...                                # byte-identical with native Lua on musl
 ```
 
-CI runs these: [`witness.yml`](.github/workflows/witness.yml) on every PR and push to `main` (suite on native + two wasm engines + Chromium, the embed witnesses, provenance); [`deep-witness.yml`](.github/workflows/deep-witness.yml) on demand and on every release tag (plain clang-20). A red witness blocks the merge.
+CI runs these: [`witness.yml`](.github/workflows/witness.yml) on every PR and push to `main`; [`deep-witness.yml`](.github/workflows/deep-witness.yml) on demand and on every release tag (plain clang-20). A red witness blocks the merge.
 
 ## Lineage
 
-Built on [PUC-Rio's Lua](https://www.lua.org). lua.wasm carries that heritage toward a maintained, WebAssembly-targeting artifact — credited, not tracked: it defers to no living upstream and pins to no floating version.
+Built on [PUC-Rio's Lua](https://www.lua.org) and [musl](https://musl.libc.org). lua.wasm carries both verbatim toward a WebAssembly-targeting artifact — credited, not tracked: it defers to no living upstream and pins to no floating version (a weekly check flags a newer signed musl; updating is a deliberate commit).
 
-An earlier generation also carried [Hugo Musso Gualandi's lua-aot](https://github.com/hugomg/lua-aot-5.4), a research AOT compiler for Lua 5.4 — removed in v0.2.0 when its wasm speedup measured marginal across browser engines (a net loss on one), not enough to justify its size and dependency ([`doc/history/aot-sunset-2026-07-24.md`](doc/history/aot-sunset-2026-07-24.md)). 
+Earlier generations were built for WASI — removed in the 2026-10 cutover to this design, because no browser provides WASI ([`doc/history/wasi-sunset-2026-10-13.md`](doc/history/wasi-sunset-2026-10-13.md)) — and carried [Hugo Musso Gualandi's lua-aot](https://github.com/hugomg/lua-aot-5.4), a research AOT compiler for Lua 5.4, removed in v0.2.0 when its wasm speedup measured marginal ([`doc/history/aot-sunset-2026-07-24.md`](doc/history/aot-sunset-2026-07-24.md)).
