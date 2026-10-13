@@ -2,7 +2,7 @@
 // and fengari-web, pinned, in the same page under the same real engine.
 //
 //   node scripts/bench-witness.mjs <lua.js> <lua.wasm> --engine <chromium|firefox|webkit>
-//        [--rounds N] [--json out.json]
+//        [--rounds N] [--json out.json] [--only work|load]
 //
 // Two measurements. Workloads (bench/*.lua, written for Lua 5.3 and 5.4
 // so fengari runs the same source): each round runs every workload on
@@ -32,12 +32,13 @@ import { ENGINES, detectEngine, launch } from './browser/engine.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
 const argv = process.argv.slice(2);
-let engine, rounds = 20, jsonOut = null;
+let engine, rounds = 20, jsonOut = null, only = null;
 const positional = [];
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--engine') engine = argv[++i];
   else if (argv[i] === '--rounds') rounds = +argv[++i];
   else if (argv[i] === '--json') jsonOut = argv[++i];
+  else if (argv[i] === '--only') only = argv[++i];
   else positional.push(argv[i]);
 }
 const [jsPath, wasmPath] = positional;
@@ -113,6 +114,7 @@ let version = browser.version();
 try {
   // one page per implementation, kept open; a fresh VM per run
   const pages = {};
+  if (only !== 'load') {
   for (const impl of IMPLS) {
     const page = await browser.newPage();
     page.on('pageerror', e => console.error(`[${impl} pageerror] ${e.message}`));
@@ -142,10 +144,11 @@ try {
   }
   process.stderr.write('\n');
   for (const impl of IMPLS) await pages[impl].close();
+  }
 
   // load-to-first-print: cold = fresh context (empty cache); warm = same context again
   const loadRounds = Math.max(3, rounds >> 1);
-  for (let r = 0; r < loadRounds; r++) {
+  for (let r = 0; r < (only === 'work' ? 0 : loadRounds); r++) {
     for (const impl of IMPLS.map((_, i) => IMPLS[(i + r) % IMPLS.length])) {
       const context = await browser.newContext();
       const page = await context.newPage();
@@ -192,6 +195,7 @@ lines.push('');
 lines.push('| | lua.wasm | Wasmoon | ratio | fengari | ratio |');
 lines.push('|---|--:|--:|--:|--:|--:|');
 for (const kind of ['cold', 'warm']) {
+  if (!load[kind].luawasm) continue;
   const ours = median(load[kind].luawasm);
   lines.push(`| ${kind} | ${ours.toFixed(0)} | ${median(load[kind].wasmoon).toFixed(0)} | ${(median(load[kind].wasmoon) / ours).toFixed(2)}× | ${median(load[kind].fengari).toFixed(0)} | ${(median(load[kind].fengari) / ours).toFixed(2)}× |`);
   json.load[kind] = load[kind];

@@ -147,11 +147,14 @@
     };
     const year = new Date().getUTCFullYear();
     const start = Date.UTC(year - 1, 0, 1) / 1000, end = Date.UTC(year + 2, 0, 1) / 1000;
-    // transitions: instants where the offset changes, to the second
+    // transitions: instants where the offset changes, to the second. A
+    // zone changes at most once a month, so probe month boundaries (36
+    // Intl calls) and binary-search inside a month that changed; a daily
+    // scan would cost ~1,100 calls, most of the page's start-up time.
     const trans = [];
     let prev = offsetAt(start);
-    for (let t = start; t < end; t += 86400) {
-      const next = Math.min(t + 86400, end);
+    for (let m = 0; m < 36; m++) {
+      const t = Date.UTC(year - 1, m, 1) / 1000, next = Math.min(Date.UTC(year - 1, m + 1, 1) / 1000, end);
       if (offsetAt(next) === prev) continue;
       let lo = t, hi = next;
       while (hi - lo > 1) { const mid = lo + Math.floor((hi - lo) / 2); if (offsetAt(mid) === prev) lo = mid; else hi = mid; }
@@ -320,7 +323,13 @@
 
   // --- boot ----------------------------------------------------------------------
   async function boot() {
-    const lua = await createLua(LUA_WASM_INLINE(), {
+    // compile through the streaming entry point even from inline bytes:
+    // the engine's streaming pipeline compiles in parallel as it reads
+    const bytes = LUA_WASM_INLINE();
+    const module = typeof WebAssembly.compileStreaming === 'function'
+      ? await WebAssembly.compileStreaming(new Response(bytes, { headers: { 'content-type': 'application/wasm' } }))
+      : await WebAssembly.compile(bytes);
+    const lua = await createLua(module, {
       stdout: t => state.sink && state.sink.print(t),
       stderr: t => state.sink && state.sink.error(t),
     });

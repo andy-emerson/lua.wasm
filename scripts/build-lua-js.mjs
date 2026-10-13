@@ -21,7 +21,9 @@ const host = readFileSync(join(here, 'host.mjs'), 'utf8').replace(/^export /gm, 
 const loader = readFileSync(join(here, 'loader.js'), 'utf8');
 const bytes = readFileSync(wasm);
 const b64 = bytes.toString('base64');
-const inline = `const LUA_WASM_INLINE = () => { const s = atob(${JSON.stringify(b64)}); const b = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i); return b; };\n`;
+// the bytes, decoded with Uint8Array.fromBase64 where the engine has it
+// (one native call) and atob plus a loop elsewhere
+const inline = `const LUA_WASM_B64 = ${JSON.stringify(b64)};\nconst LUA_WASM_INLINE = () => { if (typeof Uint8Array.fromBase64 === 'function') return Uint8Array.fromBase64(LUA_WASM_B64); const s = atob(LUA_WASM_B64); const b = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i); return b; };\n`;
 const js = `/* lua.js -- stock Lua 5.4 in a web page: <script src="lua.js"></script> then <script type="text/lua">. lua.wasm (${bytes.length} bytes) is carried inside this file. https://github.com/andy-emerson/lua.wasm */\n` +
   `(() => {\n${inline}${host}\n${loader}\n})();\n`;
 writeFileSync(out, js);
