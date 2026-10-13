@@ -1,11 +1,10 @@
 # Vendored PUC-Rio Lua: the stock interpreter source and its official test
 # suite are carried verbatim (enforced by scripts/verify-stock.sh). Mark
 # them vendored so GitHub's language stats reflect this project's own code
-# -- the wasm amalgamation, the WASI shims, the witnesses, the build --
+# -- the wasm amalgamation, the musl port layer, the witnesses, the build --
 # rather than upstream Lua.
 src/**   linguist-vendored
 tests/** linguist-vendored
 
 # ...but these are ours, not upstream:
 src/onelua.c -linguist-vendored
-src/wasi/**  -linguist-vendored

@@ -1,4 +1,4 @@
-// next-host.mjs -- a host for the browser-native artifact, in plain
+// host.mjs -- a host for lua.wasm, in plain
 // JavaScript with no Node or browser dependency, so the Node witnesses and
 // the browser page share it. It is also the reference for what any host
 // has to provide: the three imports in module "luaw", and how the

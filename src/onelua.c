@@ -6,8 +6,9 @@
 ** pattern that upstream Lua itself ships.
 **
 ** Build modes (default is the full `lua` interpreter):
-**   -DMAKE_LIB   just the core + libraries (for embedding)
-**   -DMAKE_LUA   the standalone interpreter (default)
+**   -DMAKE_LIB   just the core + libraries (no lua.c)
+**   -DMAKE_LUA   the standalone interpreter (default); the wasm artifact
+**                adds -DMAKE_REACTOR for the luaw_* embedding interface
 */
 
 #ifndef MAKE_LIB
@@ -46,36 +47,25 @@
 #endif /* !LUA_LTESTS */
 
 /*
-** ── WASI support ────────────────────────────────────────────────────
-** wasm32-wasi lacks two things Lua needs from a C runtime:
+** ── The wasm runtime: non-local jumps ───────────────────────────────
+** Raw wasm has neither setjmp/longjmp nor unwinding; Lua's error
+** handling (LUAI_THROW/LUAI_TRY) needs one of them. Compiled as C++,
+** Lua natively switches to throw/catch, which clang lowers onto the
+** wasm exception-handling proposal (standard try_table/exnref
+** encoding, -mllvm -wasm-use-legacy-eh=false). Lua throws exactly one
+** pointer and catches with catch(...) -- no type matching, no
+** destructors -- so instead of a libc++abi built with wasm EH (which no
+** distro ships) this micro-runtime provides the five __cxa entry points
+** and dummy typeinfo vtables that catch(...) never inspects. Build with
+** -fwasm-exceptions. (A C route exists on paper -- clang's
+** -wasm-enable-sjlj pass rewrites setjmp/longjmp onto wasm EH -- but
+** every LLVM available miscompiled it when tried: 18 segfaults, 19.1.1
+** emits structurally invalid catch placement, 21 rejects its own tag
+** symbols. Removed in the cutover to musl; doc/history has the record.)
 **
-** 1. Non-local jumps (Lua's error handling). Raw wasm has neither
-**    setjmp/longjmp nor unwinding; both lower onto the wasm
-**    exception-handling proposal. Two routes, one per language mode:
-**
-**    C++ (the route that works on today's toolchains): Lua natively
-**    switches LUAI_THROW/LUAI_TRY to throw/catch when compiled as C++.
-**    It throws exactly one pointer and catches with catch(...) -- no
-**    type matching, no destructors -- so instead of a libc++abi built
-**    with wasm EH (which no distro ships), the micro-runtime below
-**    provides the five __cxa entry points and dummy typeinfo vtables
-**    that catch(...) never inspects. Build with -fwasm-exceptions.
-**
-**    C (the constitutional preference, blocked today): clang's
-**    -mllvm -wasm-enable-sjlj pass rewrites setjmp/longjmp onto wasm
-**    EH and expects the three __wasm_setjmp* helpers below (the same
-**    runtime current wasi-libc ships; vendored so any wasi-libc
-**    works, header in wasi/setjmp.h). As of this writing every
-**    LLVM available to us miscompiles this path: 18 segfaults, 19.1.1
-**    emits structurally invalid catch placement, 21 rejects its own
-**    tag symbols. Kept for the day the C path heals.
-**
-** 2. Hosted-libc corners WASI leaves out or gets wrong. What can be
-**    honest is implemented (tmpnam/tmpfile against the preopened
-**    directory; fopen("") failing with ENOENT; setlocale admitting
-**    only the C locale exists); what cannot (system -- there are no
-**    processes) reports failure, which os.execute() surfaces at the
-**    Lua level exactly as on any platform without a shell.
+** Everything else Lua needs from a C runtime is musl's own, unmodified
+** (third_party/musl, port/musl.mk), with the OS under it in
+** port/luaw-sys.c and port/luaw-fs.c.
 */
 #if defined(__wasm__)
 
@@ -85,23 +75,8 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <string.h>
-#include <fcntl.h>
-#include <unistd.h>
-
-#ifndef L_tmpnam        /* wasi stdio.h declares tmpnam but not L_tmpnam */
-#define L_tmpnam 32
-#endif
 
 #if defined(__cplusplus)
-#ifndef LUAW_EXTERNAL_EH
-/* LUAW_EXTERNAL_EH: define to suppress this micro-runtime and let a real
-   C++ ABI library (a libc++abi built with -fwasm-exceptions) own exception
-   dispatch. An embedder whose host code needs typed catches -- not just
-   Lua's own catch(...) -- must use that mode, so Lua errors and the host's
-   typed exceptions travel one coherent EH domain. See the Makefile's
-   WASM_EH knob, which wires this define together with the external libc++abi
-   link line. Default (undefined) keeps the self-contained shim below. */
-
 extern "C" {
 
 struct __luawasm_eh_header {
@@ -141,135 +116,16 @@ void __luawasm_terminate (void) __asm__("_ZSt9terminatev");
 void __luawasm_terminate (void) { abort(); }
 
 }  /* extern "C" */
-
-#endif /* !LUAW_EXTERNAL_EH */
-
-#else /* !__cplusplus: the C sjlj runtime */
-
-#include "wasi/setjmp.h"
-
-struct __WasmLongjmpArgs {
-  void *env;
-  int val;
-};
-
-void __wasm_setjmp (void *env, uint32_t label, void *func_invocation_id) {
-  struct __wasm_jmp_buf_tag *jb = env;
-  jb->func_invocation_id = func_invocation_id;
-  jb->label = label;
-}
-
-uint32_t __wasm_setjmp_test (void *env, void *func_invocation_id) {
-  struct __wasm_jmp_buf_tag *jb = env;
-  return (jb->func_invocation_id == func_invocation_id) ? jb->label : 0;
-}
-
-_Noreturn void __wasm_longjmp (void *env, int val) {
-  struct __wasm_jmp_buf_tag *jb = env;
-  if (val == 0) val = 1;
-  jb->arg.env = env;
-  jb->arg.val = val;
-  __builtin_wasm_throw(1, &jb->arg);  /* tag 1: __c_longjmp */
-}
-
-#endif /* __cplusplus */
-
-/* The hosted-libc corners below patch wasi-libc. The musl build
-   (-DLUAW_MUSL, port/musl.mk) takes musl's own answers unmodified: its
-   reference behaviour is Lua 5.4.8 on musl Linux, bugs included
-   (doc/history/browser-native-2026-10-13.md). */
-#if !defined(LUAW_MUSL)
-
-#ifdef __cplusplus
-extern "C" {
+#else
+#error "the wasm build is C++ only: Lua's error handling rides wasm exception handling through throw/catch (see above)"
 #endif
-
-int system (const char *cmd) {
-  (void)cmd;
-  errno = ENOTSUP;
-  return cmd ? -1 : 0;  /* no shell available */
-}
-
-/* no /tmp in the guest namespace; hand out unused names in the
-   working directory instead (checked with access, like tmpnam) */
-char *tmpnam (char *s) {
-  static char buf[L_tmpnam];
-  static unsigned counter = 0;
-  char *out = (s != NULL) ? s : buf;
-  unsigned tries;
-  for (tries = 0; tries < 10000; tries++) {
-    snprintf(out, L_tmpnam, "lua_tmp_%u", counter++);
-    if (access(out, F_OK) != 0)
-      return out;
-  }
-  return NULL;
-}
-
-/* an anonymous scratch file in the working directory: created under a
-   fresh tmpnam name, then unlinked while open (POSIX tmpfile
-   semantics; on hosts that refuse to unlink open files the name
-   simply persists until close) */
-FILE *tmpfile (void) {
-  char name[L_tmpnam];
-  FILE *f;
-  if (tmpnam(name) == NULL)
-    return NULL;
-  f = fopen(name, "w+b");
-  if (f != NULL)
-    remove(name);
-  return f;
-}
-
-/* wasi path resolution opens "" as the preopened directory itself;
-   POSIX says ENOENT. Reimplemented over open()/fdopen() so the empty
-   path fails honestly (everything else passes straight through) */
-FILE *fopen (const char *name, const char *mode) {
-  int flags;
-  if (name == NULL || name[0] == '\0') {
-    errno = ENOENT;
-    return NULL;
-  }
-  switch (mode[0]) {
-    case 'r': flags = O_RDONLY; break;
-    case 'w': flags = O_WRONLY | O_CREAT | O_TRUNC; break;
-    case 'a': flags = O_WRONLY | O_CREAT | O_APPEND; break;
-    default: errno = EINVAL; return NULL;
-  }
-  if (strchr(mode, '+'))
-    flags = (flags & ~(O_RDONLY | O_WRONLY)) | O_RDWR;
-  int fd = open(name, flags, 0666);
-  if (fd < 0)
-    return NULL;
-  FILE *f = fdopen(fd, mode);
-  if (f == NULL)
-    close(fd);
-  return f;
-}
-
-/* wasi-libc's setlocale claims success for any locale name while only
-   the C locale actually exists; report reality instead so locale-
-   guarded code (os.setlocale users) takes its no-locale path */
-char *setlocale (int category, const char *locale) {
-  (void)category;
-  if (locale == NULL || locale[0] == '\0' ||
-      strcmp(locale, "C") == 0 || strcmp(locale, "POSIX") == 0)
-    return (char *)"C";
-  return NULL;
-}
-
-#ifdef __cplusplus
-}  /* extern "C" */
-#endif
-
-#endif /* !LUAW_MUSL */
 
 #endif /* __wasm__ */
 
-/* When compiled as C++, keep C linkage throughout: a C downstream that
-** links this in (examples/embed) calls back into the VM, and the
-** boundary must agree on symbol names. Linkage only -- inside these
-** braces the code still compiles as C++ (which is how LUAI_THROW
-** becomes a real throw). */
+/* When compiled as C++, keep C linkage throughout: the exports, the
+** libc underneath (musl, C) and the OS layer in port/ must agree on
+** symbol names. Linkage only -- inside these braces the code still
+** compiles as C++ (which is how LUAI_THROW becomes a real throw). */
 #if defined(__cplusplus)
 extern "C" {
 #endif
@@ -348,22 +204,17 @@ static void luaw_ltests_openlibs (lua_State *L) {
 /*
 ** ── The embedding interface ─────────────────────────────────────────
 ** MAKE_REACTOR wasm builds are reactors: the host calls in, the VM
-** returns. The host interface is the exports below plus what the libc
-** underneath imports: on the musl build (-DLUAW_MUSL, the browser-native
-** artifact) the three luaw imports of port/luaw-sys.c -- write, now,
-** read -- and nothing else; on the WASI build, until the cutover, WASI
-** (stdio, filesystem, clock -- print() arrives at the host as fd_write
-** on fd 1).
+** returns. The host interface is the exports below plus the three
+** imports the libc underneath makes (port/luaw-sys.c: luaw.write,
+** luaw.now, luaw.read), and nothing else.
 **
-** This glue is opt-in (-DMAKE_REACTOR, set by the Makefile's wasm-lib
-** target), NOT implied by MAKE_LIB. A downstream that links Lua into
-** its own wasm32-wasi artifact (issue #11) compiles onelua.c with plain
-** -DMAKE_LIB and drives the VM through lua.h directly; it must not
-** inherit these luaw_* exports, whose reactor coroutine model is a
-** property of *this* project's finished artifact, not of the embeddable
-** core. So the reactor belongs to the artifact build alone.
+** This glue is opt-in (-DMAKE_REACTOR, set by the Makefile's wasm
+** target), NOT implied by MAKE_LIB: the luaw_* exports and their
+** reactor coroutine model are a property of this project's finished
+** artifact, not of the Lua core, so the reactor belongs to the artifact
+** build alone.
 **
-** The contract, per the constitution: no call here ever blocks. A
+** The contract: no call here ever blocks. A
 ** long-lived program (a game's main loop) runs as a coroutine --
 ** luaw_start loads it, and the host pumps luaw_step once per frame;
 ** each yield returns control to the host. No threads, no
@@ -383,16 +234,11 @@ static const char *const LUAW_ERRKEY = "luaw.error";
 static const char *const LUAW_COKEY  = "luaw.coroutine";
 static const char *const LUAW_MSGKEY = "luaw.message";
 
-#if defined(LUAW_MUSL)
 /* os.exit (D3): musl flushes stdio, the OS layer (port/luaw-sys.c)
    records the status and traps. Nothing inside can intercept it, and
    the instance is finished: every entry below refuses from then on. */
 extern int luaw_exited;
 extern int luaw_exit_status;
-#else
-static int luaw_exited = 0;
-static int luaw_exit_status = 0;
-#endif
 #define LUAW_ENTRY_GUARD(ret) \
   do { if (luaw_exited) return (ret); } while (0)
 

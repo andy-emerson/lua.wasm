@@ -1,25 +1,25 @@
-// next-suite.mjs -- the official Lua 5.4 test suite, in portable mode, on
-// the browser-native artifact through luaw_main (stock lua.c), under Node.
+// suite-witness.mjs -- the official Lua 5.4 test suite, in portable mode, on
+// lua.wasm through luaw_main (stock lua.c), under Node.
 //
-//   node scripts/next-suite.mjs lua-next.wasm [tests-dir]
+//   node scripts/suite-witness.mjs lua.wasm [tests-dir]
 //
 // The suite's files are copied into the module's in-memory filesystem
 // (the suite loads them by relative name from the working directory,
-// which is "/"), and run exactly as the CI command for the WASI artifact
-// runs them: `lua -e"_port=true" all.lua`. all.lua prints "final OK !!!"
+// which is "/"), and run as the official suite is run in port mode:
+// `lua -e"_port=true" all.lua`. all.lua prints "final OK !!!"
 // when every file passed; the exit status is lua.c's.
 //
 // One test-setup adaptation, through LUA_INIT (which stock lua.c reads):
 // musl claims os.setlocale("pt_BR") but keeps the '.' decimal point, and
 // literals.lua asserts the decimal point changed, so the suite is told
-// the locale is unavailable -- the same prelude scripts/suite-bundle.py
-// documents. The artifact itself is unmodified musl behaviour.
+// the locale is unavailable (LOCALE_PRELUDE in scripts/host.mjs, shared
+// with the browser witness). The artifact itself is unmodified musl behaviour.
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { createLua, LOCALE_PRELUDE } from './next-host.mjs';
+import { createLua, LOCALE_PRELUDE } from './host.mjs';
 
 const [file, dir = 'tests'] = process.argv.slice(2);
-if (!file) { console.error('usage: node scripts/next-suite.mjs <lua.wasm> [tests-dir]'); process.exit(2); }
+if (!file) { console.error('usage: node scripts/suite-witness.mjs <lua.wasm> [tests-dir]'); process.exit(2); }
 
 let sawFinalOK = false, tail = '';
 const lua = await createLua(readFileSync(file), {
@@ -35,7 +35,7 @@ for (const name of readdirSync(dir)) {
   if (lua.fs.put('/' + name, readFileSync(join(dir, name))) !== 0) { console.error(`FAIL: could not put ${name}`); process.exit(1); }
   n++;
 }
-console.log(`[next-suite] ${n} suite files in the in-memory filesystem; running lua -e"_port=true" all.lua`);
+console.log(`[suite-witness] ${n} suite files in the in-memory filesystem; running lua -e"_port=true" all.lua`);
 lua.setenv('LUA_INIT', LOCALE_PRELUDE);
 lua.setenv('PATH', '/usr/bin:/bin');   // files.lua asserts a process environment has one
 
@@ -48,4 +48,4 @@ if (status !== 0 || !sawFinalOK) {
   console.error(`\nFAIL: lua exited ${status}${sawFinalOK ? '' : ', and "final OK !!!" was not printed'} (${ms} ms)`);
   process.exit(1);
 }
-console.log(`[next-suite] PASS: full official suite (_port mode) on ${file}, exit 0, "final OK !!!" seen (${ms} ms)`);
+console.log(`[suite-witness] PASS: full official suite (_port mode) on ${file}, exit 0, "final OK !!!" seen (${ms} ms)`);

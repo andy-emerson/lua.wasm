@@ -1,11 +1,13 @@
 <!doctype html>
-<!-- Minimal browser host for lua.wasm: fetch the artifact and a Lua script,
-     run the script via argv ('-e<src>' attached form -- see doc/wasm.md),
-     print the transcript. Serve this directory as plain static files; no
-     COOP/COEP, no SharedArrayBuffer, no Emscripten.
-       ?wasm=<url of lua.wasm>&script=<url of a .lua file>
-     window.__witness carries {done, exitCode, transcript} for the automated
-     driver (scripts/browser-witness.mjs). -->
+<!-- Browser host for lua.wasm: a plain page on a plain
+     static server (no COOP/COEP, no SharedArrayBuffer, no workers, no
+     Emscripten), driving lua.wasm through scripts/host.mjs -- the same
+     host the Node witnesses use. It fetches the artifact and a JSON bundle of
+     files, puts the files into the in-memory filesystem, sets the
+     environment, and runs stock lua.c (luaw_main) with the given arguments.
+       ?wasm=<url>&files=<url of {name: source}>&argv=<json array>&env=<json object>
+     window.__witness carries {done, exitCode, transcript, detected, coi} for
+     scripts/browser-witness.mjs. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -22,41 +24,49 @@
 <div id="console">booting…</div>
 <div id="status"></div>
 <script type="module">
-  import { WasiPreview1 } from './wasi-stdio-shim.mjs';
+  import { createLua } from './host.mjs';
 
   const out = document.getElementById('console');
-  const lines = [];
-  const emit = line => { lines.push(line); out.textContent = lines.join('\n'); };
+  let transcript = '';
+  const emit = (text) => { transcript += text; if (transcript.length < 200000) out.textContent = transcript; };
 
   const params = new URLSearchParams(location.search);
   const wasmUrl = params.get('wasm') ?? './lua.wasm';
-  const scriptUrl = params.get('script') ?? './witness.lua';
+  const filesUrl = params.get('files');
+  const argv = JSON.parse(params.get('argv') ?? '["lua","-v"]');
+  const env = JSON.parse(params.get('env') ?? '{}');
 
-  window.__witness = { done: false, exitCode: null, transcript: null };
+  // The engine this page actually runs on, from the user agent (the
+  // driver's launcher type is the authoritative guard; this is the
+  // in-page cross-check).
+  const ua = navigator.userAgent;
+  const detected = /Firefox\//.test(ua) ? 'firefox'
+                 : /Chrome\//.test(ua) ? 'chromium'
+                 : /AppleWebKit\//.test(ua) ? 'webkit' : 'unknown';
+
+  window.__witness = { done: false };
   try {
-    const [module, luaSource] = await Promise.all([
+    const [module, files] = await Promise.all([
       WebAssembly.compileStreaming(fetch(wasmUrl)),
-      fetch(scriptUrl).then(r => {
-        if (!r.ok) throw new Error(`fetch ${scriptUrl}: ${r.status}`);
-        return r.text();
-      }),
+      filesUrl ? fetch(filesUrl).then(r => { if (!r.ok) throw new Error(`fetch ${filesUrl}: ${r.status}`); return r.json(); }) : {},
     ]);
     out.textContent = '';
-    // No filesystem in the shim, by design -- the script travels as argv.
-    // Attached form: a separate '-e <src>' argument starting with '--'
-    // (a Lua comment) would read as another option to lua.c's scanner.
-    const wasi = new WasiPreview1({
-      args: ['lua', '-e' + luaSource],
-      stdout: emit,
-      stderr: line => emit('stderr: ' + line),
-    });
-    const instance = await WebAssembly.instantiate(module, wasi.importsFor(module));
-    const code = wasi.start(instance);
-    document.getElementById('status').textContent = `exit ${code}`;
-    window.__witness = { done: true, exitCode: code, transcript: lines.join('\n') };
+    const lua = await createLua(module, { stdout: emit, stderr: t => emit(t) });
+    for (const [name, source] of Object.entries(files)) {
+      const r = lua.fs.put(name, source);
+      if (r !== 0) throw new Error(`fs.put ${name}: ${r}`);
+    }
+    for (const [k, v] of Object.entries(env)) lua.setenv(k, v);
+    const t = performance.now();
+    let exitCode;
+    try { exitCode = lua.main(argv); }
+    catch (e) { exitCode = -2; emit(`\n[trap: ${e.message}; luaw_exit_code ${lua.exitCode()}]`); }
+    const ms = Math.round(performance.now() - t);
+    document.getElementById('status').textContent = `exit ${exitCode} (${ms} ms, ${detected}, crossOriginIsolated=${self.crossOriginIsolated})`;
+    window.__witness = { done: true, exitCode, transcript, detected, ua, coi: self.crossOriginIsolated, imports: lua.imports, ms };
   } catch (err) {
     out.textContent = 'host error: ' + (err && err.message ? err.message : err);
-    window.__witness = { done: true, exitCode: -1, transcript: 'host error: ' + err };
+    window.__witness = { done: true, exitCode: -1, transcript: 'host error: ' + err, detected, ua, coi: self.crossOriginIsolated };
   }
 </script>
 </body>
