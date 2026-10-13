@@ -25,6 +25,8 @@ lua.wasm is honest about maturity, so you can trust what it claims.
 
 Every claimed path is witnessed: the interpreter paths (native, wasmtime, Node, browser, reactor) and the vendored-core provenance continuously on every change.
 
+**In progress — a browser-native artifact.** The artifact above is built for WASI; a browser can only run it through a WASI emulation layer, which is the wrong interface for the stated purpose. The replacement runs stock Lua on upstream **musl** with three plain imports (`write`, `now`, `read`) and no Emscripten, and lands in four merges. The first is in: [`third_party/musl`](third_party/musl) is verbatim signed **musl 1.2.6**, checked on every change by [`scripts/verify-musl.sh`](scripts/verify-musl.sh) (sha256, project-key fingerprint, GPG signature, two-way diff), with [`musl-upstream.yml`](.github/workflows/musl-upstream.yml) flagging a newer signed release weekly. Nothing is built from it yet. The decisions, their options and the spike evidence are in [`doc/history/browser-native-2026-10-13.md`](doc/history/browser-native-2026-10-13.md).
+
 ## Build and run
 
 Toolchain: **clang 20+** with a wasi-libc sysroot (the standardized wasm-EH encoding needs LLVM 20; `zig c++` works as a self-contained clang-20+ — recipe in the Makefile). clang 18/19 can still build the pre-standard encoding via `WASM_EH_ENCODING=legacy`, at the cost of every non-V8 runtime. Running the artifact needs a WASI host with wasm exception handling — **Node ≥ 24.15** (24.0–24.14 only with `--experimental-wasm-exnref`), a current browser, or **wasmtime** (`scripts/wasmtime-run.py`).
@@ -57,7 +59,7 @@ That is one consumer shape — a host *wrapping* the finished module. The other 
 
 ## Contributing
 
-How work is planned, done, and reviewed here is the working agreement in [`AGENTS.md`](AGENTS.md) — vendored verbatim from [andy-emerson/working-agreement](https://github.com/andy-emerson/working-agreement) (CC BY 4.0; the version rides in its front matter, updated by replacing the file). Open work — todos, bugs, open decisions — lives in [GitHub Issues](https://github.com/andy-emerson/lua.wasm/issues); the design lives in [`doc/`](doc/) (`wasm.md`, `embedding.md`), with dated records under [`doc/history/`](doc/history/). The vendored Lua core is verbatim stock 5.4.8 except `luac.c`, enforced by [`scripts/verify-stock.sh`](scripts/verify-stock.sh) — read its header before touching `src/`.
+How work is planned, done, and reviewed here is the working agreement in [`AGENTS.md`](AGENTS.md) — vendored verbatim from [andy-emerson/working-agreement](https://github.com/andy-emerson/working-agreement) (CC BY 4.0; the version rides in its front matter, updated by replacing the file). Open work — todos, bugs, open decisions — lives in [GitHub Issues](https://github.com/andy-emerson/lua.wasm/issues); the design lives in [`doc/`](doc/) (`wasm.md`, `embedding.md`), with dated records under [`doc/history/`](doc/history/). The vendored Lua core is verbatim stock 5.4.8 except `luac.c`, enforced by [`scripts/verify-stock.sh`](scripts/verify-stock.sh) — read its header before touching `src/`. The vendored C library is verbatim signed musl 1.2.6, enforced by [`scripts/verify-musl.sh`](scripts/verify-musl.sh) — its header has the refresh steps.
 
 ### Building
 
