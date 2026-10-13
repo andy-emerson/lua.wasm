@@ -35,6 +35,7 @@ export const LOCALE_PRELUDE =
 export async function createLua(source, opts = {}) {
   const outDec = new TextDecoder(), errDec = new TextDecoder();
   let stdin = typeof opts.stdin === 'string' ? enc.encode(opts.stdin) : (opts.stdin ?? new Uint8Array());
+  let prompt = opts.prompt ?? null;   // () => string | null, asked when stdin is empty
   let memory;
   const imports = {
     luaw: {
@@ -50,6 +51,10 @@ export async function createLua(source, opts = {}) {
       },
       now: opts.now ?? (() => performance.timeOrigin + performance.now()),
       read: (ptr, maxlen) => {
+        if (stdin.length === 0 && prompt) {           // interactive: ask for a line
+          const line = prompt();
+          if (line !== null) stdin = enc.encode(line + '\n');
+        }
         const n = Math.min(maxlen, stdin.length);
         new Uint8Array(memory.buffer, ptr, n).set(stdin.subarray(0, n));
         stdin = stdin.subarray(n);
@@ -93,6 +98,10 @@ export async function createLua(source, opts = {}) {
     /* what the program yielded on the last step, as a string, or null */
     message: () => { const lp = x.luaw_alloc(4); try { const mp = x.luaw_message(lp); return mp ? dec.decode(new Uint8Array(memory.buffer, mp, u32(lp))) : null; } finally { x.luaw_free(lp); } },
     setenv: (name, value) => withCString(name, np => value == null ? x.luaw_setenv(np, 0) : withCString(value, vp => x.luaw_setenv(np, vp))),
+    /* replace what stdin has left to give (a string or bytes; '' = end of input) */
+    setStdin: (data) => { stdin = bytesOf(data ?? ''); },
+    /* a function asked for a line (string, or null for end of input) whenever stdin is empty; null to stop asking */
+    setPrompt: (fn) => { prompt = fn ?? null; },
     /* stock lua.c's main: main(['lua', '-e', 'print(1)']) -> exit status */
     main: (argv) => {
       const ptrs = argv.map(a => alloc(enc.encode(a), true));

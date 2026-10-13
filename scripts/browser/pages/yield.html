@@ -1,0 +1,16 @@
+<!doctype html>
+<!-- D8 row 10: a tag that yields at top level resumes on the next
+     animation frame and finishes; the following tag waits for it. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>yield</title><script src="/lua.js"></script></head>
+<body>
+<script type="text/lua">
+  for i = 1, 5 do
+    print("frame " .. i)
+    coroutine.yield()
+  end
+  print("done")
+</script>
+<script type="text/lua">print("second tag ran after")</script>
+</body>
+</html>

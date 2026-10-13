@@ -1,0 +1,15 @@
+<!doctype html>
+<!-- D8 row 2: an error goes to the page, next to the output it cut off,
+     and to the console; the next tag still runs in the same state. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>error</title><script src="/lua.js"></script></head>
+<body>
+<script type="text/lua" id="first">
+  print("before")
+  y = 7
+  error("boom")
+  print("never")
+</script>
+<script type="text/lua">print("after", y)</script>
+</body>
+</html>

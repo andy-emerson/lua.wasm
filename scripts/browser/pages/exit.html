@@ -1,0 +1,14 @@
+<!doctype html>
+<!-- D8 row 9: os.exit ends the VM for the page: its status shows, a
+     later tag refuses with "VM exited". -->
+<html lang="en">
+<head><meta charset="utf-8"><title>exit</title><script src="/lua.js"></script></head>
+<body>
+<script type="text/lua">
+  print("a")
+  io.write("unflushed")
+  os.exit(3)
+</script>
+<script type="text/lua">print("b")</script>
+</body>
+</html>

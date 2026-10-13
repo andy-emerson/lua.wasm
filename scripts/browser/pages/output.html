@@ -1,0 +1,12 @@
+<!doctype html>
+<!-- D8 row 1 overrides: data-output="#id" sends output to that element,
+     data-output="console" to the console only. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>output</title><script src="/lua.js"></script></head>
+<body>
+<div id="target"></div>
+<script type="text/lua" data-output="#target">print("to target")</script>
+<script type="text/lua" data-output="console">print("to console")</script>
+<script type="text/lua">print("to page")</script>
+</body>
+</html>

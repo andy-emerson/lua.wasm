@@ -69,6 +69,16 @@ console.log('stdin through read');
   lua.init();
   lua.run('print(io.read("a") == "", io.read("l"))');
   eq('no stdin: read("a") is "" and read("l") is nil', lua.take().stdout, 'true\tnil\n');
+  /* the host can refill stdin between runs, and can be asked per line
+     (how lua.js serves data-stdin and data-stdin="prompt") */
+  lua.setStdin('again\n');
+  lua.run('print(io.read("l"), io.read("l"))');
+  eq('setStdin replaces what is left to read', lua.take().stdout, 'again\tnil\n');
+  const lines = ['one', 'two', null];
+  lua.setPrompt(() => lines.shift());
+  lua.run('print(io.read("l"), io.read("l"), io.read("l"))');
+  eq('setPrompt is asked for a line whenever stdin is empty, until it answers null', lua.take().stdout, 'one\ttwo\tnil\n');
+  lua.setPrompt(null);
 }
 
 console.log('the clock');

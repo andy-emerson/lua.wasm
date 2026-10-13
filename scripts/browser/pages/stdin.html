@@ -1,0 +1,17 @@
+<!doctype html>
+<!-- D8 row 7: data-stdin is what io.read sees, then end of input; no
+     attribute means end of input at once. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>stdin</title><script src="/lua.js"></script></head>
+<body>
+<script type="text/lua" data-stdin="3 4
+rest of line">
+  local a, b = io.read("n", "n")
+  print(a + b)
+  print(io.read("l"))
+  print(io.read("l"))
+  print(io.read("l"))
+</script>
+<script type="text/lua">print(io.read("l"), io.read("a") == "")</script>
+</body>
+</html>
