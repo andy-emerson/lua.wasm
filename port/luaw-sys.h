@@ -11,6 +11,10 @@
 long luaw_map_anon(unsigned long len);
 void luaw_unmap_anon(long addr, unsigned long len);
 
+/* luaw-sys.c: the origin of the monotonic and CPU-time clocks (os.clock);
+   the VM calls it when it is created (onelua.c: luaw_init, luaw_main) */
+void luaw_clock_start(void);
+
 /* luaw-fs.c: the in-memory filesystem's syscall handlers. Each returns
    the syscall's result: >= 0, or -errno. */
 long luaw_fs_openat(const char *path, int flags, unsigned mode);

@@ -242,6 +242,9 @@ extern int luaw_exit_status;
 #define LUAW_ENTRY_GUARD(ret) \
   do { if (luaw_exited) return (ret); } while (0)
 
+/* os.clock counts from the VM's creation (port/luaw-sys.c) */
+extern void luaw_clock_start(void);
+
 /* stash the error at the top of 'from's stack; keep it alive in the
    registry of the main state so the returned pointer stays valid */
 static void luaw_seterror (lua_State *from) {
@@ -260,6 +263,7 @@ static void luaw_clearerror (void) {
 LUAW_API int luaw_init (void) {
   LUAW_ENTRY_GUARD(LUA_ERRRUN);
   if (luaw_L != NULL) return 0;
+  luaw_clock_start();
   luaw_L = luaL_newstate();
   if (luaw_L == NULL) return LUA_ERRMEM;
   luaL_openlibs(luaw_L);
@@ -400,6 +404,7 @@ LUAW_API const char *luaw_message (size_t *len) {
    like anywhere else (luaw_exit_code then holds the status). */
 LUAW_API int luaw_main (int argc, char **argv) {
   LUAW_ENTRY_GUARD(1);
+  luaw_clock_start();
   return main(argc, argv);
 }
 #endif
