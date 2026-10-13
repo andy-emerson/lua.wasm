@@ -126,6 +126,119 @@
     return '=' + (tag.id ? tag.id : `(lua script ${state.tags})`);
   }
 
+  // --- local time (D5, D8 row 14) --------------------------------------------
+  // musl's local time is /etc/localtime, a TZif file. The page writes one
+  // for the visitor's zone from the browser's own rules: Intl gives the
+  // UTC offset and abbreviation at any instant; transitions over the
+  // current year +-1 are found by a daily scan refined to the second;
+  // standard time is the smaller offset of the year (DST moves clocks
+  // forward, in either hemisphere); and a POSIX rule in the footer (what
+  // musl applies beyond the table) is derived when both years agree on
+  // the month / week / weekday / time of each change.
+  function zoneFile(tz) {
+    const offsetFmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'longOffset' });
+    const abbrFmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'short' });
+    const part = (fmt, t) => fmt.formatToParts(new Date(t * 1000)).find(p => p.type === 'timeZoneName').value;
+    const offsetAt = (t) => {            // seconds east of UTC
+      const m = /GMT([+-])(\d\d):(\d\d)/.exec(part(offsetFmt, t));
+      return m ? (m[1] === '-' ? -1 : 1) * (+m[2] * 3600 + +m[3] * 60) : 0;
+    };
+    const abbrAt = (t) => {
+      const a = part(abbrFmt, t);
+      if (/^[A-Za-z]{3,6}$/.test(a)) return a;
+      const o = offsetAt(t), s = o < 0 ? '-' : '+', h = Math.floor(Math.abs(o) / 3600), mi = Math.floor(Math.abs(o) % 3600 / 60);
+      return s + String(h).padStart(2, '0') + String(mi).padStart(2, '0');
+    };
+    const year = new Date().getUTCFullYear();
+    const start = Date.UTC(year - 1, 0, 1) / 1000, end = Date.UTC(year + 2, 0, 1) / 1000;
+    // transitions: instants where the offset changes, to the second
+    const trans = [];
+    let prev = offsetAt(start);
+    for (let t = start; t < end; t += 86400) {
+      const next = Math.min(t + 86400, end);
+      if (offsetAt(next) === prev) continue;
+      let lo = t, hi = next;
+      while (hi - lo > 1) { const mid = lo + Math.floor((hi - lo) / 2); if (offsetAt(mid) === prev) lo = mid; else hi = mid; }
+      prev = offsetAt(hi);
+      trans.push(hi);
+    }
+    // types: (offset, abbreviation) pairs, isdst by the smaller-offset rule
+    const offsets = [offsetAt(start), ...trans.map(offsetAt)];
+    const std = Math.min(...offsets);
+    const types = [], typeOf = (t) => {
+      const o = offsetAt(t), a = abbrAt(t);
+      let i = types.findIndex(x => x.off === o && x.abbr === a);
+      if (i < 0) { i = types.length; types.push({ off: o, abbr: a, dst: o !== std }); }
+      return i;
+    };
+    typeOf(start);                       // the type before the first transition comes first
+    const transTypes = trans.map(typeOf);
+    // the POSIX footer rule, when the two full years agree
+    const footer = posixRule(types, trans, transTypes, year, offsetAt);
+    return encodeTzif(types, trans, transTypes, footer);
+  }
+
+  // "EST5EDT,M3.2.0,M11.1.0"-style rule from this year's and next year's
+  // transitions, or just the standard time if there is no DST or the years
+  // disagree (musl then keeps the last table entry beyond the window)
+  function posixRule(types, trans, transTypes, year, offsetAt) {
+    const q = (abbr) => /^[A-Za-z]+$/.test(abbr) ? abbr : '<' + abbr + '>';
+    const off = (sec) => {                 // POSIX offsets are west-positive
+      const s = sec > 0 ? '-' : '', a = Math.abs(sec);
+      const h = Math.floor(a / 3600), m = Math.floor(a % 3600 / 60);
+      return s + h + (m ? ':' + String(m).padStart(2, '0') : '');
+    };
+    const stdType = types.find(t => !t.dst), dstType = types.find(t => t.dst);
+    if (!dstType) return q(stdType.abbr) + off(stdType.off);
+    const ruleOf = (y) => {
+      const inYear = trans.map((t, i) => [t, transTypes[i]]).filter(([t]) => new Date(t * 1000).getUTCFullYear() === y);
+      if (inYear.length !== 2) return null;
+      const m = inYear.map(([t, ti]) => {
+        const before = offsetAt(t - 1);     // wall time before the change
+        const d = new Date((t + before) * 1000);
+        const dom = d.getUTCDate(), last = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+        const week = dom + 7 > last ? 5 : Math.ceil(dom / 7);
+        const hh = d.getUTCHours(), mm = d.getUTCMinutes();
+        return { to: types[ti].dst, rule: `M${d.getUTCMonth() + 1}.${week}.${d.getUTCDay()}` + (hh === 2 && mm === 0 ? '' : `/${hh}${mm ? ':' + String(mm).padStart(2, '0') : ''}`) };
+      });
+      const s = m.find(x => x.to), e = m.find(x => !x.to);
+      return s && e ? `${s.rule},${e.rule}` : null;
+    };
+    const r1 = ruleOf(year), r2 = ruleOf(year + 1);
+    if (!r1 || r1 !== r2) return q(stdType.abbr) + off(stdType.off);
+    return q(stdType.abbr) + off(stdType.off) + q(dstType.abbr) + (dstType.off - stdType.off === 3600 ? '' : off(dstType.off)) + ',' + r1;
+  }
+
+  // a TZif version-2 file: the 32-bit block (times clamped) then the 64-bit
+  // block, each with the transitions, the types, the abbreviations; then the
+  // footer rule
+  function encodeTzif(types, trans, transTypes, footer) {
+    const abbrs = []; let chars = '';
+    for (const t of types) { abbrs.push(chars.length); chars += t.abbr + '\0'; }
+    const enc = new TextEncoder();
+    const charBytes = enc.encode(chars), footBytes = enc.encode('\n' + footer + '\n');
+    const block = (wide) => {
+      const tsz = wide ? 8 : 4;
+      const n = trans.length, size = 44 + n * tsz + n + types.length * 6 + charBytes.length;
+      const b = new Uint8Array(size), dv = new DataView(b.buffer);
+      b.set(enc.encode('TZif2'), 0);
+      let p = 20;
+      for (const c of [0, 0, 0, n, types.length, charBytes.length]) { dv.setUint32(p, c); p += 4; }
+      for (const t of trans) {
+        if (wide) { dv.setBigInt64(p, BigInt(t)); p += 8; }
+        else { dv.setInt32(p, Math.max(-0x80000000, Math.min(0x7fffffff, t))); p += 4; }
+      }
+      for (const i of transTypes) b[p++] = i;
+      for (let i = 0; i < types.length; i++) { dv.setInt32(p, types[i].off); b[p + 4] = types[i].dst ? 1 : 0; b[p + 5] = abbrs[i]; p += 6; }
+      b.set(charBytes, p);
+      return b;
+    };
+    const a = block(false), c = block(true);
+    const out = new Uint8Array(a.length + c.length + footBytes.length);
+    out.set(a, 0); out.set(c, a.length); out.set(footBytes, a.length + c.length);
+    return out;
+  }
+
   // --- files (D8 rows 3, 4) ------------------------------------------------------
   // fetch a URL relative to the page; returns bytes, or throws with the status
   async function fetchBytes(url) {
@@ -221,6 +334,10 @@
     const r = lua.init();
     if (r !== 0) throw new Error(`luaw_init failed: ${r}`);
     if (lua.run(REQUIRE_SHIM, '=lua.js') !== 0) throw new Error('require shim: ' + lua.lastError());
+    try {
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (tz) lua.fs.put('/etc/localtime', zoneFile(tz));
+    } catch (e) { console.warn('lua.js: local time stays UTC: ' + (e && e.message ? e.message : e)); }
     const tags = Array.from(document.querySelectorAll('script[type="text/lua"]'));
     for (const tag of tags) await runTag(tag);
   }

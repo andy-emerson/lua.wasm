@@ -89,6 +89,25 @@ const cases = [
     const errs = await p.errors();
     check('a src that does not exist reports on the page', errs.length === 1 && errs[0].includes('nowhere.lua: HTTP 404'), errs);
   }],
+  ['time', async (p) => {
+    /* the page is opened once per zone (see the loop below); the oracle is
+       Intl itself, formatting the same instants in the same zone */
+    const want = await p.page.evaluate((tz) => {
+      const fmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', timeZoneName: 'short' });
+      const off = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'longOffset' });
+      const offAt = (t) => off.formatToParts(new Date(t * 1000)).find(x => x.type === 'timeZoneName').value;
+      const jan = offAt(Date.UTC(2026, 0, 1) / 1000), jul = offAt(Date.UTC(2026, 6, 1) / 1000);
+      return [1783000000, 1767000000, 1798000000, 2000000000].map(t => {
+        const q = Object.fromEntries(fmt.formatToParts(new Date(t * 1000)).map(x => [x.type, x.value]));
+        const isdst = offAt(t) !== (parseFloat(jan.replace('GMT', '').replace(':', '.')) <= parseFloat(jul.replace('GMT', '').replace(':', '.')) ? jan : jul);
+        /* lua.js keeps a lettered abbreviation and writes +HHMM where Intl has none */
+        const o = offAt(t), m = /GMT([+-])(\d\d):(\d\d)/.exec(o);
+        const abbr = /^[A-Za-z]{3,6}$/.test(q.timeZoneName) ? q.timeZoneName : m ? `${m[1]}${m[2]}${m[3]}` : '+0000';
+        return `${t}\t${q.year}-${q.month}-${q.day} ${q.hour}:${q.minute}:${q.second} ${abbr}\t${isdst}\ttrue\n`;
+      }).join('');
+    }, p.zone);
+    eq(`os.date/os.time under ${p.zone} agree with Intl (summer, winter, southern summer, beyond the window)`, (await p.outputs())[0], want);
+  }],
   ['yield', async (p) => {
     eq('a yielding tag resumes each frame and finishes; the next tag waits', await p.outputs(), ['frame 1\nframe 2\nframe 3\nframe 4\nframe 5\ndone\n', 'second tag ran after\n']);
     const frames = await p.page.evaluate(() => window.__raf);
@@ -105,9 +124,11 @@ function eq(name, got, want) { check(name, JSON.stringify(got) === JSON.stringif
 
 const browser = await launch(engine, () => server.close());
 try {
-  for (const [name, assertions] of cases) {
-    console.log(`${name}.html`);
-    const page = await browser.newPage();
+  const ZONES = ['America/New_York', 'Asia/Kolkata', 'Australia/Sydney'];
+  for (const [name, assertions, zone] of cases.flatMap(c => c[0] === 'time' ? ZONES.map(z => [c[0], c[1], z]) : [c])) {
+    console.log(`${name}.html${zone ? ` (${zone})` : ''}`);
+    const context = await browser.newContext(zone ? { timezoneId: zone } : {});
+    const page = await context.newPage();
     const con = { log: [], error: [], warning: [] };
     page.on('console', m => { (con[m.type()] ?? (con[m.type()] = [])).push(m.text()); });
     page.on('pageerror', e => con.error.push('[pageerror] ' + e.message));
@@ -115,17 +136,17 @@ try {
     await page.goto(`${base}/pages/${name}.html`);
     await page.evaluate(() => Lua.ready.catch(() => {}));
     const detected = await page.evaluate(detectEngine);
-    if (detected !== engine) { check(`page ran on ${engine}`, false, `ran on ${detected}`); await page.close(); continue; }
+    if (detected !== engine) { check(`page ran on ${engine}`, false, `ran on ${detected}`); await context.close(); continue; }
     const coi = await page.evaluate(() => self.crossOriginIsolated);
     check('crossOriginIsolated is false', coi === false, coi);
     const p = {
-      page, console: con,
+      page, console: con, zone,
       outputs: () => page.evaluate(() => Array.from(document.querySelectorAll('.lua-output')).map(e => e.textContent)),
       errors: () => page.evaluate(() => Array.from(document.querySelectorAll('.lua-error')).map(e => e.textContent)),
     };
     try { await assertions(p); }
     catch (e) { check(`${name}: assertions ran`, false, e.message); }
-    await page.close();
+    await context.close();
   }
 } finally {
   await browser.close();

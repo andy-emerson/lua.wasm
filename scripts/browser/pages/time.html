@@ -1,0 +1,18 @@
+<!doctype html>
+<!-- D5 / D8 row 14: local time is the visitor's. lua.js writes a zone
+     file for the browser's zone to /etc/localtime before any tag runs,
+     so os.date, os.time and %Z are musl's own under that zone. The
+     witness opens this page under three zones and compares with Intl. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>time</title><script src="/lua.js"></script></head>
+<body>
+<script type="text/lua">
+  -- fixed instants: a northern summer day, a northern winter day, a
+  -- southern summer day, and one well outside the generated window
+  for _, t in ipairs{1783000000, 1767000000, 1798000000, 2000000000} do
+    local d = os.date("*t", t)
+    print(t, os.date("%Y-%m-%d %H:%M:%S %Z", t), tostring(d.isdst), os.time(d) == t)
+  end
+</script>
+</body>
+</html>
