@@ -8,15 +8,18 @@ the witnesses, and the sharp edges. The design and its decisions are in
 
 ## What it is made of
 
-- **Lua**: `src/` is verbatim PUC-Rio 5.4.8 except `luac.c`
-  (`scripts/verify-stock.sh`); `src/onelua.c` compiles it as one
-  translation unit, as C++ so `LUAI_THROW`/`LUAI_TRY` become
-  `throw`/`catch` on wasm exception handling, with a self-contained
-  `catch(...)`-only micro-runtime (`__cxa_*`) in place of libc++abi. The
-  same file carries the `luaw_*` host interface (`-DMAKE_REACTOR`).
+- **Lua**: `src/` is verbatim PUC-Rio 5.4.8, sources, headers and
+  build Makefile (`scripts/verify-stock.sh`); `src/onelua.c` compiles
+  it as one translation unit of plain C. `LUAI_THROW`/`LUAI_TRY` route
+  to `port/luaw-eh.cpp`, the one C++ unit, whose `luaw_throw`/`luaw_try`
+  ride wasm exception handling with a `catch(...)`-only micro-runtime
+  (`__cxa_*`) in place of libc++abi; the exception object lives in a
+  static slot, so a caught error allocates nothing, as native Lua's
+  `longjmp` allocates nothing. `onelua.c` also carries the `luaw_*`
+  host interface (`-DMAKE_REACTOR`).
 - **The C library**: `third_party/musl` is verbatim musl 1.2.6
   (`scripts/verify-musl.sh`), compiled for `wasm32-freestanding` by
-  `port/musl.mk` with the arch in `port/wasm32` — five headers (every
+  `port/musl.mk` with the arch in `port/wasm32` — six headers (every
   `__syscallN` goes to one dispatcher; single-thread atomics; a thread
   pointer in static memory) and a `bits/` directory that is riscv32's
   32-bit tables verbatim. Only the source directories Lua reaches are
@@ -53,7 +56,7 @@ make wasm WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar" \
 enabling the wasm EH feature that `-fwasm-exceptions` implies under plain
 clang.) Plain llvm.org clang-20 (`clang-20 lld-20 libclang-rt-20-dev-wasm32`)
 builds with the Makefile defaults — `make wasm MUSL_AR=llvm-ar-20` —
-and `deep-witness.yml` runs that build (not yet run since the cutover). zig 0.16 (LLVM 21) miscompiles
+and `deep-witness.yml` runs that build on demand and on every release tag. zig 0.16 (LLVM 21) miscompiles
 this build: its backend rejects the micro-runtime's tag symbols.
 
 The release form is stripped at link (`--strip-all`) and passed through

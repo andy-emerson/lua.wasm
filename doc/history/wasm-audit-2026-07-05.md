@@ -5,6 +5,8 @@ up as the Lua VM for [love-wasi](https://github.com/andy-emerson/love-wasi).
 Filed against this repo at pin `945f810`. The original lives in that repo at
 `wasi/lua/AUDIT-lua-wasm.md`, alongside the build recipes and witnesses it
 cites; this file is the in-tree record and tracks each finding's disposition.
+The scripts and build it names belong to the WASI generation, removed in
+[`wasi-sunset-2026-10-13.md`](wasi-sunset-2026-10-13.md).
 
 **Provenance.** The audit was a **by-hand, single-engine** report (Node 22 /
 V8 12.4, plus a wasmtime attempt blocked by the encoding). The dispositions

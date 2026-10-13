@@ -47,8 +47,12 @@ that much between the sets); the ratio within a table is the claim.
 - **Allocation** and **strings**: within a few percent either way in
   Chromium and WebKit; Wasmoon slightly ahead in Firefox and on
   allocation in WebKit.
-- **fengari** is 4–15× behind both wasm engines on everything except
-  Firefox's `pcall`, where it leads.
+- **fengari** is 4–15× behind both wasm engines in Chromium and WebKit
+  and 1.4–4× behind in Firefox, where it leads on `pcall`.
+- The `pcall` rows were measured before the exception object moved to
+  a static slot (each 200,000-error run then grew linear memory by
+  3.5 MB; the module no longer allocates on throw). The computation is
+  the same; the next on-demand run says whether the medians moved.
 
 ## Workloads
 
@@ -117,12 +121,11 @@ Load to first print (ms from navigation; cold = fresh context, warm = cached; 10
 | cold | 57 | 101 | 1.76× | 54 | 0.94× |
 | warm | 37 | 46 | 1.23× | 20 | 0.54× |
 
-## Baseline
+## Baseline: the run before the optimization round
 
-The tables below are the run before the optimization round, kept for
-the comparison above; the current tables are the claim.
+Kept for the comparison above; the current tables are the claim.
 
-## Baseline: Chromium 141
+### Chromium 141
 
 Run: chromium 141.0.7390.37, 2026-10-13, lua.wasm at 0af7271, Wasmoon 1.16.0, fengari-web 0.1.4; 20 rotated rounds per workload on fresh instances, medians in ms; ratio = peer / lua.wasm (above 1: lua.wasm is faster); p = two-sided Mann-Whitney U.
 
@@ -141,7 +144,7 @@ Load to first print (ms from navigation; cold = fresh context, warm = cached; 10
 | cold | 75 | 66 | 0.89× | 62 | 0.83× |
 | warm | 47 | 41 | 0.88× | 35 | 0.75× |
 
-## Baseline: Firefox 151
+### Firefox 151
 
 Run: firefox 151.0, 2026-10-13, lua.wasm at 0af7271, Wasmoon 1.16.0, fengari-web 0.1.4; 20 rotated rounds per workload on fresh instances, medians in ms; ratio = peer / lua.wasm (above 1: lua.wasm is faster); p = two-sided Mann-Whitney U.
 
@@ -160,7 +163,7 @@ Load to first print (ms from navigation; cold = fresh context, warm = cached; 10
 | cold | 137 | 123 | 0.90× | 95 | 0.69× |
 | warm | 112 | 115 | 1.03× | 75 | 0.67× |
 
-## Baseline: WebKit 26.5
+### WebKit 26.5
 
 Run: webkit 26.5, 2026-10-13, lua.wasm at 0af7271, Wasmoon 1.16.0, fengari-web 0.1.4; 20 rotated rounds per workload on fresh instances, medians in ms; ratio = peer / lua.wasm (above 1: lua.wasm is faster); p = two-sided Mann-Whitney U.
 

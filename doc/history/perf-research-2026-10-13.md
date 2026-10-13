@@ -54,9 +54,7 @@ and small `memcpy` into calls throughout the module. `-fhosted` undoes
 that in one flag and every witness passes with it; the suite has no
 floating-point workload that would show the difference, and the one
 run above does not justify a claim either way, so it is not adopted
-here and is recorded as the one flag worth carrying when a numeric
-workload joins the benchmark (a decision for the Human: adding a
-workload changes what the benchmark claims).
+here; [#66](https://github.com/andy-emerson/lua.wasm/issues/66) measures it against a numeric workload first.
 
 ## What the literature settled without a trial
 
@@ -68,9 +66,8 @@ workload changes what the benchmark claims).
 - **Firefox's throw cost** (~27 µs per `error`/`pcall` round trip against ~0.6 µs in Chromium and WebKit): unreported upstream — no Bugzilla entry, no newsletter mention; by code reading, a throw allocates a GC object and unwinds through the generic JIT frame iterator. The action is a shell reproducer and a bug report, not a workaround; fengari's JavaScript exceptions beat both wasm engines there and will until it is fixed.
 - **Branch hinting** (Chrome 137, Firefox 148, Safari 16 on by default): the only shipped proposal with an interpreter-relevant number (7–10%, on a JIT's output, not an interpreter); clang emits no hints from `__builtin_expect`, so nothing to try yet.
 
-## Open
+## Open work and reopen conditions
 
-- The remaining `fib` gap to Wasmoon (0.87× Chromium, 0.88× WebKit) is unexplained after the side-by-side below ruled out every build-configuration cause that could be flipped. The allocator is not in play: `fib` allocates nothing. What is left is the engines' treatment of the two loops themselves (register allocation and layout of a 1.5 MB-of-text function), which a flag cannot reach.
-- A reproducer and bug report for SpiderMonkey's throw cost.
-- Per-phase start-up timing (decode, compile, instantiate, `_initialize`, the zone file, the first tag) — no published numbers exist for 300–600 KB modules; ours would be first.
-- The allocator comparison the literature lacks, on our own harness, if a workload ever shows the allocator.
+Open work lives in Issues: the unexplained `fib` gap ([#63](https://github.com/andy-emerson/lua.wasm/issues/63)), the SpiderMonkey throw-cost reproducer and report ([#64](https://github.com/andy-emerson/lua.wasm/issues/64)), per-phase start-up timing ([#65](https://github.com/andy-emerson/lua.wasm/issues/65)), and `-fhosted` against a numeric workload ([#66](https://github.com/andy-emerson/lua.wasm/issues/66)).
+
+Reopen conditions for what this record settled: the allocator (musl's mallocng, kept) if a workload ever shows it in a profile; tail-call dispatch if an engine publishes a measurement where it beats `switch` for an interpreter; Binaryen `-O4` when a Binaryen release makes `Flatten` handle `try_table`; branch hinting when clang emits hints from `__builtin_expect`.

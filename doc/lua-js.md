@@ -12,10 +12,9 @@ defaults are what they are is in
 `lua.js` is a classic script — `<script src="lua.js"></script>`, no
 `type="module"`, no build step, no server requirement — that carries
 `lua.wasm` inside it, so a page works from any static server or from a file opened from
-disk. Releases attach it; `make lua-js` builds it. Size at the current build: 561,610 bytes
-(173,739 brotli, 212,103 gzip), against 400,903 (123,786 brotli) for
-the module alone — the inline form costs about 40% more compressed; the
-price of one file.
+disk. Releases attach it; `make lua-js` builds it. The inline form costs
+about 40% more compressed than the module alone — the price of one
+file; the README carries the sizes of the current build.
 
 It needs a browser with the standard WebAssembly exception-handling
 encoding: Chrome 137, Firefox 131 and Safari 18.4 or later by
@@ -30,7 +29,7 @@ webassembly.org's feature data (stated; CI runs current engines).
 </script>
 ```
 
-Tags run **after the page has loaded, in document order**, in **one
+Tags run **once the document has been parsed (`DOMContentLoaded`), in document order**, in **one
 Lua state** for the page: a global set in one tag is visible in the
 next (chunk-level `local`s are private, as always). Each tag is a chunk
 named by its `id` or `(lua script N)`.
@@ -99,7 +98,7 @@ console (its terminal), not to the page, unless redirected.
 
 | | |
 |---|---|
-| `await Lua.ready` | resolves (with `Lua`) once the VM exists and the page's tags have run; every call below throws before that |
+| `await Lua.ready` | resolves (with `Lua`) once the VM exists and the page's tags have run; every call below throws before that, even while a tag is still running |
 | `Lua.run(source, name?)` | run a chunk to completion; throws an `Error` carrying the Lua message |
 | `Lua.start(source, name?)` | load a program as the resident coroutine |
 | `await Lua.step(msg?)` | resume it once: resolves `1` while it is alive and yielded, `0` when it finished; throws on error. `msg` is what its `coroutine.yield()` returns (the chunk's `...` on the first step). A lazy `require` inside the program is served before `step` resolves |
