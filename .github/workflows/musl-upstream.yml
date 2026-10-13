@@ -1,0 +1,58 @@
+# musl-upstream.yml -- notice when musl publishes a newer signed release
+# than the one vendored in third_party/musl, and open an issue for it.
+#
+# Updating is deliberate, never automatic: every claim about lua.wasm is
+# backed by test runs on specific bytes, so a new musl lands as a commit
+# (see scripts/verify-musl.sh for the refresh steps) with the full
+# witness re-run, not as a silent build-time drift. This workflow only
+# makes sure a new release is noticed promptly (security fixes included).
+name: musl upstream check
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'   # weekly, Monday 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: compare the newest signed release against third_party/musl/VERSION
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          have=$(cat third_party/musl/VERSION)
+          page=$(curl -fsSL https://musl.libc.org/releases.html)
+          # newest version that has both a tarball and a detached signature listed
+          latest=$(printf '%s' "$page" | grep -o 'musl-[0-9][0-9.]*\.tar\.gz\.asc' \
+                   | sed 's/musl-\(.*\)\.tar\.gz\.asc/\1/' | sort -V | tail -1)
+          echo "vendored: $have   newest signed upstream: $latest"
+          [ -n "$latest" ] || { echo "::error::could not parse the releases page"; exit 1; }
+          newest=$(printf '%s\n%s\n' "$have" "$latest" | sort -V | tail -1)
+          if [ "$newest" = "$have" ]; then
+            echo "up to date"; exit 0
+          fi
+          title="musl $latest is released (vendored: $have)"
+          if gh issue list --state open --search "\"$title\" in:title" --json title -q '.[].title' | grep -Fxq "$title"; then
+            echo "issue already open"; exit 0
+          fi
+          body=$(printf '%s\n' \
+            'musl has published a newer signed release than the one vendored in `third_party/musl`.' \
+            '' \
+            "- vendored: $have" \
+            "- newest signed upstream: $latest" \
+            '- https://musl.libc.org/releases.html' \
+            '' \
+            'Updating is a deliberate commit: follow the refresh steps in `scripts/verify-musl.sh`' \
+            '(replace the tree, update the version and sha256 pins), then re-run the full witnesses.' \
+            'Behaviour differences in the differential test against native Lua on musl are the' \
+            'things to look at before merging.' \
+            '' \
+            '_Opened automatically by the `musl upstream check` workflow._')
+          gh issue create --title "$title" --body "$body"
