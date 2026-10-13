@@ -6,13 +6,19 @@
 <html lang="en">
 <head><meta charset="utf-8"><title>jsapi</title><script src="/lua.js"></script></head>
 <body>
-<script type="text/lua">tagvar = "set by the tag"</script>
+<script type="text/lua">tagvar = "set by the tag" for i = 1, 3 do coroutine.yield() end</script>
 <script>
   window.__api = { done: false };
   (async () => {
     const r = window.__api;
     try {
+      // while the tag above is yielding, the VM exists but Lua.ready has
+      // not resolved: every call must still refuse, and nothing may land
+      // in the tag's output
+      r.early = [];
+      const poll = setInterval(() => { try { Lua.run('print("early")'); r.early.push('ran'); } catch (e) { r.early.push(e.message); } }, 1);
       await Lua.ready;
+      clearInterval(poll);
       r.notReadyIsSync = typeof Lua.run === 'function';
       Lua.run('print("to the console", tagvar)');                    // console.log
       try { Lua.run('error("from js")', '=mine'); r.thrown = 'none'; }

@@ -14,8 +14,14 @@
   -- cannot yield from a C callback: the stock error, with the hint
   local ok, err = pcall(table.sort, {3, 1, 2}, function (a, b) require "late" return a < b end)
   print(ok, err:match("module 'late' not found") ~= nil, err:match("list it in data%-files") ~= nil)
-  -- a module that is not there
+  -- a module that is not there: the stock message (path, cpath, and the
+  -- root-name cpath line for a dotted name) plus the fetch result
   print(pcall(require, "missing"))
+  print(select(2, pcall(require, "pkg.sub")):match("no file '/usr/local/lib/lua/5.4/pkg.so'") ~= nil)
+  -- package.loaded[name] = false makes require load the module again, as stock does
+  package.loaded.util = false
+  local again = require("util")
+  print(type(again) == "table", package.loaded.util == again)
 </script>
 <script type="text/lua" src="nowhere.lua"></script>
 </body>
