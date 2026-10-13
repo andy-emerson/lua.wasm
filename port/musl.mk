@@ -56,11 +56,23 @@ MUSL_SYSINC= -nostdinc -I$(MUSL_ARCH) -I$(MUSL_DIR)/arch/generic \
   -I$(MUSL_BUILD)/include -I$(MUSL_DIR)/include
 
 # Link line for a reactor on this libc: no entry, exports kept, the
-# stack size the artifact needs (deep Lua recursion), compiler-rt from the
-# driver. Order: crt, OS layer, the program, libc.
+# stack size the artifact needs (deep Lua recursion). Order: crt, OS
+# layer, the program, libc, then compiler-rt's builtins: musl's printf
+# and frexpl reach 128-bit float helpers (__multf3, __eqtf2, ...) that
+# live in libclang_rt.builtins, and -nostdlib links no runtime on its
+# own. zig links its own compiler-rt with every link, so for it the
+# archive is not found and nothing is added; plain clang needs the
+# archive its driver names (libclang-rt-N-dev-wasm32), looked up in its
+# resource directory, where distributions have placed it under three
+# different names.
 MUSL_LDFLAGS= --target=wasm32-freestanding -nostdlib -Wl,--no-entry \
   -Wl,--export-dynamic -Wl,-z,stack-size=$(WASM_STACK)
 MUSL_RT= $(MUSL_BUILD)/luaw-crt.o $(MUSL_BUILD)/luaw-sys.o $(MUSL_BUILD)/luaw-fs.o
+MUSL_RESDIR= $(shell $(WASM_CLANGXX) -print-resource-dir 2>/dev/null)
+MUSL_RTLIB?= $(firstword $(wildcard $(MUSL_RESDIR)/lib/libclang_rt.builtins-wasm32.a \
+  $(MUSL_RESDIR)/lib/wasi/libclang_rt.builtins-wasm32.a \
+  $(MUSL_RESDIR)/lib/wasm32-*/libclang_rt.builtins.a \
+  $(MUSL_RESDIR)/lib/wasm32-*/libclang_rt.builtins-wasm32.a))
 
 $(MUSL_BUILD)/include/bits/alltypes.h: $(MUSL_ARCH)/bits/alltypes.h.in $(MUSL_DIR)/include/alltypes.h.in $(MUSL_DIR)/tools/mkalltypes.sed
 	@mkdir -p $(@D)
@@ -107,7 +119,7 @@ musl-libc: $(MUSL_RT) $(MUSL_A)
 # getenv, stdin through the read import), run by scripts/libc-smoke.mjs.
 $(MUSL_BUILD)/libc-smoke.wasm: port/test/libc-smoke.c $(MUSL_RT) $(MUSL_A)
 	$(WASM_CC) --target=wasm32-freestanding $(MUSL_SYSINC) -O2 -Wall -c $< -o $(MUSL_BUILD)/libc-smoke.o
-	$(WASM_CC) $(MUSL_LDFLAGS) $(MUSL_RT) $(MUSL_BUILD)/libc-smoke.o $(MUSL_A) -o $@
+	$(WASM_CC) $(MUSL_LDFLAGS) $(MUSL_RT) $(MUSL_BUILD)/libc-smoke.o $(MUSL_A) $(MUSL_RTLIB) -o $@
 
 libc-smoke: $(MUSL_BUILD)/libc-smoke.wasm
 	node scripts/libc-smoke.mjs $<
@@ -117,7 +129,7 @@ libc-smoke: $(MUSL_BUILD)/libc-smoke.wasm
 # growth once the working set is stable -- freed pages are reused.
 $(MUSL_BUILD)/alloc-stress.wasm: port/test/alloc-stress.c $(MUSL_RT) $(MUSL_A)
 	$(WASM_CC) --target=wasm32-freestanding $(MUSL_SYSINC) -O2 -Wall -c $< -o $(MUSL_BUILD)/alloc-stress.o
-	$(WASM_CC) $(MUSL_LDFLAGS) $(MUSL_RT) $(MUSL_BUILD)/alloc-stress.o $(MUSL_A) -o $@
+	$(WASM_CC) $(MUSL_LDFLAGS) $(MUSL_RT) $(MUSL_BUILD)/alloc-stress.o $(MUSL_A) $(MUSL_RTLIB) -o $@
 
 libc-stress: $(MUSL_BUILD)/alloc-stress.wasm
 	node scripts/libc-stress.mjs $<

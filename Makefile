@@ -97,7 +97,7 @@ $(MUSL_BUILD)/luaw-eh.o: port/luaw-eh.cpp $(MUSL_GENH)
 	$(WASM_CLANGXX) $(WASM_EHFLAGS) -c $< -o $@
 
 $(MUSL_BUILD)/lua.linked.wasm: $(MUSL_BUILD)/onelua.o $(MUSL_BUILD)/luaw-eh.o $(MUSL_RT) $(MUSL_A)
-	$(WASM_CLANGXX) $(MUSL_LDFLAGS) -Wl,--strip-all $(MUSL_RT) $(MUSL_BUILD)/onelua.o $(MUSL_BUILD)/luaw-eh.o $(MUSL_A) -o $@
+	$(WASM_CLANGXX) $(MUSL_LDFLAGS) -Wl,--strip-all $(MUSL_RT) $(MUSL_BUILD)/onelua.o $(MUSL_BUILD)/luaw-eh.o $(MUSL_A) $(MUSL_RTLIB) -o $@
 
 $(WASM_O): $(MUSL_BUILD)/lua.linked.wasm
 	@if [ -n "$(WASM_OPT)" ]; then \
