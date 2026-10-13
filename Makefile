@@ -275,7 +275,7 @@ WASM_NEXT_O= lua-next.wasm
 WASM_NEXT_CFLAGS= --target=wasm32-freestanding $(MUSL_SYSINC) -O2 -fno-strict-aliasing \
 	  -fwasm-exceptions -nostdlib++ -Isrc \
 	  -DLUA_USE_LINUX -DLUA_USE_JUMPTABLE=0 -DLUAW_MUSL \
-	  -DMAKE_LIB -DMAKE_REACTOR \
+	  -DMAKE_LUA -DMAKE_REACTOR \
 	  $(WASM_EH_ENC_FLAGS) $(WASM_EXTRA)
 
 $(MUSL_BUILD)/onelua-next.o: src/onelua.c $(MUSL_GENH)
