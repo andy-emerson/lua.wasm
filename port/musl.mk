@@ -27,7 +27,7 @@ MUSL_ARCH=  port/wasm32
 MUSL_A=     $(MUSL_BUILD)/libc.a
 
 WASM_CC?= clang-20
-MUSL_AR?= $(WASM_AR)
+MUSL_AR?= llvm-ar
 
 MUSL_SRCDIRS= string ctype math stdio stdlib time locale errno exit env \
   internal malloc malloc/mallocng fcntl unistd stat misc prng multibyte \

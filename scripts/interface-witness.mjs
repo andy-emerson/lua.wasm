@@ -32,10 +32,20 @@ async function fresh(opts = {}) {
 }
 const trapOf = (f) => { try { f(); return null; } catch (e) { return e; } };
 
-console.log('imports');
+console.log('imports and exports');
 {
   const lua = await fresh();
   eq('the module imports exactly luaw.{now,read,write}', lua.imports, ['luaw.now', 'luaw.read', 'luaw.write']);
+  /* the export list is the API: nothing of Lua's or the libc's leaks out
+     (clang hides wasm symbols by default; --export-dynamic exports only
+     what is marked default visibility) */
+  eq('the module exports exactly memory, _initialize, the __cpp_exception tag and the luaw_* functions',
+     WebAssembly.Module.exports(module).map(e => `${e.kind}:${e.name}`).sort(),
+     ['function:_initialize', 'function:luaw_alloc', 'function:luaw_exit_code', 'function:luaw_free',
+      'function:luaw_fs_get', 'function:luaw_fs_list', 'function:luaw_fs_mkdir', 'function:luaw_fs_put', 'function:luaw_fs_remove',
+      'function:luaw_init', 'function:luaw_last_error', 'function:luaw_main', 'function:luaw_message',
+      'function:luaw_run', 'function:luaw_setenv', 'function:luaw_start', 'function:luaw_step',
+      'memory:memory', 'tag:__cpp_exception']);
 }
 
 console.log('init / run / errors');
@@ -134,6 +144,11 @@ console.log('files');
   eq('errno text and numbers are Linux\'s', lua.take().stdout, 'nil\t/data.txt: No such file or directory\t2\nnil\t/zz: No such file or directory\t2\ntrue\ttrue\n');
   lua.run('print(io.open("")) print(os.remove("")) print(os.rename("", "/x"))');
   eq('the empty path is ENOENT, as on Linux (package.searchpath relies on it)', lua.take().stdout, 'nil\t: No such file or directory\t2\nnil\t: No such file or directory\t2\nnil\tNo such file or directory\t2\n');
+  /* positions are 64-bit, files live in 32-bit memory: a write past what
+     memory can hold fails as EFBIG and never lands at the position
+     truncated to 32 bits (unbuffered, so the write is the syscall) */
+  lua.run('local f = io.open("/big.txt", "w") f:setvbuf("no") f:write("head") print(f:seek("set", 2^32)) print(f:write("x")) f:close()');
+  eq('a write at offset 2^32 is "File too large" (EFBIG, 27) and the file is untouched', [lua.take().stdout, lua.fs.getText('/big.txt')], ['4294967296\nnil\tFile too large\t27\n', 'head']);
 }
 
 console.log('environment and local time');

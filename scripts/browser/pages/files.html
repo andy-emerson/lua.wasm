@@ -23,6 +23,17 @@
   local again = require("util")
   print(type(again) == "table", package.loaded.util == again)
 </script>
+<script type="text/lua" data-files="bad.lua">
+  -- require's error texts are stock's, byte for byte: a bad argument, a
+  -- module that fails to load (no position prefix: stock raises it from
+  -- inside the C searcher), and the full "not found" listing of a dotted
+  -- name, with the fetch result lua.js appends stripped off
+  print(pcall(require, nil))
+  print(pcall(require))
+  print(pcall(require, "bad"))
+  local ok, msg = pcall(require, "pkg.sub")
+  print(ok, (msg:gsub("\n\t%(lua%.js: .-%)$", "")))
+</script>
 <script type="text/lua" src="nowhere.lua"></script>
 </body>
 </html>

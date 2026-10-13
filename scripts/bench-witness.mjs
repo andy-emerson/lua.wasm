@@ -57,7 +57,7 @@ const versions = {
 
 // --- the workloads --------------------------------------------------------------
 const workloads = {};
-for (const name of (await readdir(join(root, 'bench'))).filter(n => n.endsWith('.lua') && n !== 'hello.lua').sort()) {
+for (const name of (await readdir(join(root, 'bench'))).filter(n => n.endsWith('.lua')).sort()) {
   workloads[name.replace(/\.lua$/, '')] = await readFile(join(root, 'bench', name), 'utf8');
 }
 

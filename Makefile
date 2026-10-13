@@ -75,7 +75,6 @@ lua-debug:
 # Rules in port/musl.mk (WASM_CC, MUSL_AR, the generated headers, libc.a,
 # the OS layer objects, and the libc's own witnesses: libc-smoke,
 # libc-stress).
-WASM_AR= llvm-ar
 include port/musl.mk
 
 # ── The artifact ───────────────────────────────────────────────────────────

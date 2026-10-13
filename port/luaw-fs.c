@@ -194,7 +194,7 @@ static void release(File *f) {          /* drop once unlinked and closed */
 static int reserve(File *f, size_t need) {
   if (need <= f->cap) return 1;
   size_t ncap = f->cap ? f->cap : 256;
-  while (ncap < need) ncap *= 2;
+  while (ncap < need) ncap = ncap > (size_t)-1 / 2 ? need : ncap * 2;   /* doubling must not wrap to 0 */
   unsigned char *nd = realloc(f->data, ncap);
   if (!nd) return 0;
   f->data = nd; f->cap = ncap;
@@ -283,8 +283,11 @@ long luaw_fs_write(int fd, const void *buf, size_t n) {
   if (d->is_dir || (d->flags & O_ACCMODE) == O_RDONLY) return -EBADF;
   File *f = d->file;
   if (d->flags & O_APPEND) d->pos = (long long)f->size;
+  /* the position is 64-bit, the file lives in 32-bit memory: a write that
+     would end beyond 2 GiB cannot land (and must not land at the position
+     truncated to 32 bits) */
+  if ((unsigned long long)d->pos + n > 0x7fffffffULL) return -EFBIG;
   size_t end = (size_t)d->pos + n;
-  if (end < n) return -EFBIG;
   if (!reserve(f, end)) return -ENOSPC;
   if ((size_t)d->pos > f->size) memset(f->data + f->size, 0, (size_t)d->pos - f->size);
   memcpy(f->data + d->pos, buf, n);
