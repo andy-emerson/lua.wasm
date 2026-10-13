@@ -172,7 +172,12 @@ death and replacement, a 50k-frame pump, GC under allocation pressure).
 exactness, errno, locale, stdin through the `read` import) and `make
 libc-stress` (`port/test/alloc-stress.c`: 300,000 allocator operations
 and eight 64 MB map/unmap rounds proving page reuse) exercise the libc
-without Lua.
+without Lua. `node scripts/eh-check.mjs lua.wasm` reads the shipped
+module with Binaryen and asserts that no function among the twenty
+largest contains a `try_table`, and that between one and twelve small
+functions do: the interpreter loop carries no landing pads, and Lua's
+catch stays in the protected-call entry points where
+`port/luaw-eh.cpp` put it. CI runs it after the interface witness.
 
 ## Sharp edges
 

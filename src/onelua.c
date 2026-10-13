@@ -47,85 +47,35 @@
 #endif /* !LUA_LTESTS */
 
 /*
-** ── The wasm runtime: non-local jumps ───────────────────────────────
-** Raw wasm has neither setjmp/longjmp nor unwinding; Lua's error
-** handling (LUAI_THROW/LUAI_TRY) needs one of them. Compiled as C++,
-** Lua natively switches to throw/catch, which clang lowers onto the
-** wasm exception-handling proposal (standard try_table/exnref
-** encoding, -mllvm -wasm-use-legacy-eh=false). Lua throws exactly one
-** pointer and catches with catch(...) -- no type matching, no
-** destructors -- so instead of a libc++abi built with wasm EH (which no
-** distro ships) this micro-runtime provides the five __cxa entry points
-** and dummy typeinfo vtables that catch(...) never inspects. Build with
-** -fwasm-exceptions. (A C route exists on paper -- clang's
-** -wasm-enable-sjlj pass rewrites setjmp/longjmp onto wasm EH -- but
-** every LLVM available miscompiled it when tried: 18 segfaults, 19.1.1
-** emits structurally invalid catch placement, 21 rejects its own tag
-** symbols. Removed in the cutover to musl; doc/history has the record.)
+** ── The wasm build: non-local jumps ─────────────────────────────────
+** Raw wasm has neither setjmp/longjmp nor unwinding. Lua's error
+** handling (LUAI_THROW/LUAI_TRY, ldo.c) is routed to port/luaw-eh.cpp,
+** the one C++ translation unit, which raises and catches on the wasm
+** exception-handling proposal; the interpreter itself compiles as plain
+** C. LUAI_TRY is expanded only inside luaD_rawrunprotected, whose
+** parameters are named f and ud -- the macro leans on that, since its
+** own arguments carry the call only as text. (A C route exists on
+** paper -- clang's -wasm-enable-sjlj pass rewrites setjmp/longjmp onto
+** wasm EH -- but every LLVM available miscompiled it when tried: 18
+** segfaults, 19.1.1 emits structurally invalid catch placement, 21
+** rejects its own tag symbols; doc/history has the record.)
 **
 ** Everything else Lua needs from a C runtime is musl's own, unmodified
 ** (third_party/musl, port/musl.mk), with the OS under it in
 ** port/luaw-sys.c and port/luaw-fs.c.
 */
 #if defined(__wasm__)
-
-#include <stdint.h>
-#include <stddef.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <errno.h>
-#include <string.h>
-
-#if defined(__cplusplus)
-extern "C" {
-
-struct __luawasm_eh_header {
-  void *typeinfo;
-  void (*dtor)(void *);
-};
-
-void *__cxa_allocate_exception (size_t size) {
-  char *p = (char *)malloc(sizeof(struct __luawasm_eh_header) + size);
-  return p + sizeof(struct __luawasm_eh_header);
-}
-
-void __cxa_free_exception (void *obj) {
-  free((char *)obj - sizeof(struct __luawasm_eh_header));
-}
-
-void __cxa_throw (void *obj, void *tinfo, void (*dtor)(void *)) {
-  struct __luawasm_eh_header *h =
-    (struct __luawasm_eh_header *)((char *)obj - sizeof(struct __luawasm_eh_header));
-  h->typeinfo = tinfo;
-  h->dtor = dtor;
-  __builtin_wasm_throw(0, obj);  /* tag 0: __cpp_exception */
-}
-
-void *__cxa_begin_catch (void *obj) { return obj; }
-
-void __cxa_end_catch (void) {}
-
-void __gxx_wasm_personality_v0 (void) {}
-
-/* catch(...) never inspects type_info; these exist only as symbols for
-   the throw site's weak typeinfo objects */
-char __luawasm_ptr_ti_vtable[32] __asm__("_ZTVN10__cxxabiv119__pointer_type_infoE");
-char __luawasm_class_ti_vtable[32] __asm__("_ZTVN10__cxxabiv117__class_type_infoE");
-
-void __luawasm_terminate (void) __asm__("_ZSt9terminatev");
-void __luawasm_terminate (void) { abort(); }
-
-}  /* extern "C" */
-#else
-#error "the wasm build is C++ only: Lua's error handling rides wasm exception handling through throw/catch (see above)"
-#endif
-
+extern void luaw_throw (void *c) __attribute__((noreturn));
+extern int luaw_try (void *L, void (*f)(void *, void *), void *ud);
+#define LUAI_THROW(L,c)   luaw_throw(c)
+#define LUAI_TRY(L,c,a) \
+  if (luaw_try((L), (void (*)(void *, void *))f, ud)) { if ((c)->status == 0) (c)->status = -1; }
+#define luai_jmpbuf       int  /* unused */
 #endif /* __wasm__ */
 
-/* When compiled as C++, keep C linkage throughout: the exports, the
-** libc underneath (musl, C) and the OS layer in port/ must agree on
-** symbol names. Linkage only -- inside these braces the code still
-** compiles as C++ (which is how LUAI_THROW becomes a real throw). */
+/* If ever compiled as C++ (the wasm build no longer is), keep C linkage
+** throughout: the exports, the libc and the OS layer in port/ must agree
+** on symbol names. */
 #if defined(__cplusplus)
 extern "C" {
 #endif
