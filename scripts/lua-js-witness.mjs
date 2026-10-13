@@ -89,6 +89,18 @@ const cases = [
     check('the missing module\'s message is stock, with the fetch result appended', /^false\tmodule 'missing' not found:/.test(out[1].split('\n')[2]) && out[1].includes('HTTP 404'), out[1]);
     check('the message lists package.cpath too, as stock does', out[1].includes("\n\tno file './missing.so'"), out[1]);
     check('a dotted name adds the root-name cpath line; package.loaded[name] = false makes require load again', out[1].endsWith('(lua.js: missing.lua: HTTP 404)\ntrue\ntrue\ttrue\n'), JSON.stringify(out[1].slice(-160)));
+    /* the oracle: what native lua 5.4.8 prints for the same four calls
+       (src/lua, built by `make guess`, run in a directory holding bad.lua) */
+    eq('require\'s error texts are stock\'s, byte for byte: bad argument, load failure without a position, the full not-found listing', out[2],
+      "false\tbad argument #1 to 'require' (string expected, got nil)\n" +
+      "false\tbad argument #1 to 'require' (string expected, got no value)\n" +
+      "false\terror loading module 'bad' from file './bad.lua':\n\t./bad.lua:1: unexpected symbol near '='\n" +
+      "false\tmodule 'pkg.sub' not found:\n\tno field package.preload['pkg.sub']\n" +
+      "\tno file '/usr/local/share/lua/5.4/pkg/sub.lua'\n\tno file '/usr/local/share/lua/5.4/pkg/sub/init.lua'\n" +
+      "\tno file '/usr/local/lib/lua/5.4/pkg/sub.lua'\n\tno file '/usr/local/lib/lua/5.4/pkg/sub/init.lua'\n" +
+      "\tno file './pkg/sub.lua'\n\tno file './pkg/sub/init.lua'\n" +
+      "\tno file '/usr/local/lib/lua/5.4/pkg/sub.so'\n\tno file '/usr/local/lib/lua/5.4/loadall.so'\n\tno file './pkg/sub.so'\n" +
+      "\tno file '/usr/local/lib/lua/5.4/pkg.so'\n\tno file '/usr/local/lib/lua/5.4/loadall.so'\n\tno file './pkg.so'\n");
     const errs = await p.errors();
     check('a src that does not exist reports on the page', errs.length === 1 && errs[0].includes('nowhere.lua: HTTP 404'), errs);
   }],

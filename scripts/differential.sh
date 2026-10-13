@@ -49,7 +49,7 @@ for script in "$CORPUS"/*.lua; do
      python3 -c 'import os, sys; os.execv(sys.argv[1], ["lua"] + sys.argv[2:])' "$NATIVE" t.lua one two \
      > "$work/$name.native.out" 2> "$work/$name.native.err"; echo $? > "$work/$name.native.rc")
   # the artifact: the prepared directory mirrored into the in-memory filesystem
-  printf '%s' "$STDIN_TEXT" | node --experimental-wasm-exnref "$ROOT/scripts/lua.mjs" "$WASM" \
+  printf '%s' "$STDIN_TEXT" | node "$ROOT/scripts/lua.mjs" "$WASM" \
      --dir "$work/stage" --env TZ="$ENV_TZ" --env PATH=/usr/bin:/bin -- t.lua one two \
      > "$work/$name.wasm.out" 2> "$work/$name.wasm.err"; echo $? > "$work/$name.wasm.rc"
   set -e

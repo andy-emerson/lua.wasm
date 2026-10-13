@@ -56,7 +56,8 @@ static void luaw_sys_init(void) {
 ** then reaches SYS_exit_group here: the status is recorded for the
 ** luaw_exit_code export and the module traps -- the one event that
 ** unwinds into the host, and the only way nothing inside (pcall
-** included) can intercept it. Every later entry refuses (luaw_exited). */
+** included) can intercept it. Every later entry that would run Lua
+** refuses (luaw_exited, read by onelua.c); the libc itself is intact. */
 int luaw_exited = 0;
 int luaw_exit_status = 0;
 
@@ -113,7 +114,8 @@ long luaw_map_anon(unsigned long len) {
   }
   uint32_t i = pg_managed;              /* no free run: extend, reusing a free tail */
   while (i > 0 && !pg_used(i - 1)) i--;
-  if ((uintptr_t)(i + n) * PG > 0xffff0000u || !grow_to((uintptr_t)(i + n) * PG))
+  /* the cap is counted in pages: the byte count (i + n) * PG wraps at 4 GiB */
+  if (i + n > NPG - 16 || !grow_to((uintptr_t)(i + n) * PG))
     return -ENOMEM;
   if (i < pg_managed) memset((void *)(uintptr_t)(i * PG), 0, (size_t)(pg_managed - i) * PG);
   pg_mark(i, n, 1);
@@ -161,14 +163,14 @@ static long long now_ns(void) {
 void luaw_clock_start(void) { clock_origin = now_ns(); }
 
 static void fill_timespec(long clk, void *out) {
-  struct { long long sec; long nsec; } *ts = out;   /* musl's 64-bit timespec */
+  struct timespec *ts = out;            /* musl passes its own struct to clock_gettime64 */
   long long ns = now_ns();
   if (clk != CLOCK_REALTIME) {
     if (clock_origin < 0) clock_origin = ns;
     ns -= clock_origin;
   }
-  ts->sec = ns / 1000000000LL;
-  ts->nsec = (long)(ns % 1000000000LL);
+  ts->tv_sec = ns / 1000000000LL;
+  ts->tv_nsec = (long)(ns % 1000000000LL);
 }
 
 /* ── the dispatcher ─────────────────────────────────────────────── */

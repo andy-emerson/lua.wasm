@@ -9,7 +9,9 @@ the witnesses, and the sharp edges. The design and its decisions are in
 ## What it is made of
 
 - **Lua**: `src/` is verbatim PUC-Rio 5.4.8, sources, headers and
-  build Makefile (`scripts/verify-stock.sh`); `src/onelua.c` compiles
+  build Makefile, and `tests/` is the official test suite, verbatim
+  (`scripts/verify-stock.sh` holds both to the release tarballs);
+  `src/onelua.c` compiles
   it as one translation unit of plain C. `LUAI_THROW`/`LUAI_TRY` route
   to `port/luaw-eh.cpp`, the one C++ unit, whose `luaw_throw`/`luaw_try`
   ride wasm exception handling with a `catch(...)`-only micro-runtime
@@ -21,9 +23,14 @@ the witnesses, and the sharp edges. The design and its decisions are in
   (`scripts/verify-musl.sh`), compiled for `wasm32-freestanding` by
   `port/musl.mk` with the arch in `port/wasm32` — six headers (every
   `__syscallN` goes to one dispatcher; single-thread atomics; a thread
-  pointer in static memory) and a `bits/` directory that is riscv32's
-  32-bit tables verbatim. Only the source directories Lua reaches are
-  compiled; the archive resolves lazily.
+  pointer in static memory; two, `crt_arch.h` and `kstat.h`, are
+  placeholders that nothing compiled here includes — musl's arch
+  directories carry them for `crt1.c` and the pre-`statx` stat path) and
+  a `bits/` directory that is riscv32's
+  32-bit tables verbatim, except that `alltypes.h.in` makes `_Addr` and
+  `_Reg` `long`, as clang's wasm32 `size_t` and `intptr_t` are. Only
+  the source directories Lua reaches are compiled; the archive resolves
+  lazily.
 - **The OS**: `port/luaw-sys.c` answers musl's Linux syscalls inside the
   module — stdio as a terminal on fds 0–2 over the `write` and `read`
   imports, a clock over `now` whose reads never repeat an instant,
@@ -75,7 +82,9 @@ the size. Every witness runs on that file.
 
 **Exports**: `memory`, `_initialize` (call once, first), the
 `__cpp_exception` tag (an artifact of the EH encoding; never caught by
-the host), and the `luaw_*` functions the README tabulates. Strings are
+the host), and the `luaw_*` functions the README tabulates — exactly
+these, asserted by the interface witness; nothing of Lua's C API or of
+the libc is exported. Strings are
 passed by copying them into the module's memory with `luaw_alloc`;
 pointers the module returns are read until NUL or to the length it gives
 back. `luaw_step(msg, len)` passes a string to the resident program as
@@ -92,8 +101,13 @@ drives it from a page.
 **`os.exit`** flushes stdio, records the status (`luaw_exit_code`) and
 traps: a `WebAssembly.RuntimeError` reaches the host from whichever entry
 call was running. `pcall` cannot intercept it (it is not an error), and
-every later entry call returns "VM exited". An uncaught stack overflow or
-a Lua `error` never traps; they return a status code with the message in
+every later call that would run Lua — `luaw_init`, `luaw_run`,
+`luaw_start`, `luaw_step`, `luaw_main` — returns a failure status with
+`luaw_last_error` reading "VM exited"; `luaw_message` reads null. The
+libc underneath is intact, so `luaw_fs_*`, `luaw_setenv`, `luaw_alloc`
+and `luaw_free` keep working: a host can still collect the files a
+program wrote before exiting. An uncaught stack overflow or a Lua
+`error` never traps; they return a status code with the message in
 `luaw_last_error`. `abort()` from inside the C library (an internal musl
 failure) traps with exit code 134.
 
@@ -116,10 +130,13 @@ node scripts/lua.mjs lua.wasm --dir mydir --env TZ=UTC -- script.lua arg1
 ```
 
 `scripts/lua.mjs` is the `lua` command line under Node (`luaw_main`
-with the process's stdin, stdout, stderr and exit status); `--dir`
+with the process's stdout, stderr and exit status, and its stdin read
+whole before Lua starts — piped or redirected input works; a terminal's
+typed input is not forwarded, so `lua -i` sees end of input); `--dir`
 mirrors a host directory into the in-memory filesystem at `/`, `--env`
 sets variables, `--tz` installs a zone file at `/etc/localtime`. Node ≥
-24.15 runs the artifact as is; 24.0–24.14 need `--experimental-wasm-exnref`.
+24.15 runs the artifact as is; 24.0–24.14 need `--experimental-wasm-exnref`
+(no script here passes it).
 
 Note the **attached** form `-e"_port=true"` (no space) when a following
 argument itself begins with `--`: it is ambiguous to the standalone
@@ -167,10 +184,12 @@ memory counts. Any other difference is a bug in the port.
 
 ## The other witnesses
 
-`scripts/interface-witness.mjs lua.wasm` (74 checks): the import list,
-every export, the exit path, the message channel, the filesystem, and
-the adversarial battery (contained stack overflow, mid-flight program
-death and replacement, a 50k-frame pump, GC under allocation pressure).
+`scripts/interface-witness.mjs lua.wasm` (77 checks): the import list,
+the export list (exact), every export's behaviour, the exit path, the
+message channel, the filesystem, and the adversarial battery (contained
+stack overflow, mid-flight program death and replacement, a 50k-frame
+pump, GC under allocation pressure, 200k caught errors leaving linear
+memory flat).
 `make libc-smoke` (`port/test/libc-smoke.c`: printf and strtod
 exactness, errno, locale, stdin through the `read` import) and `make
 libc-stress` (`port/test/alloc-stress.c`: 300,000 allocator operations
@@ -205,3 +224,9 @@ catch stays in the protected-call entry points where
 - `brk` never moves, so musl's allocator is entirely on `mmap`; memory
   grows in 4 KiB pages and freed pages are reused but never returned to
   the engine (`memory.grow` only ever grows).
+- A file position is 64-bit but a file lives in 32-bit memory: a write
+  that would end beyond 2 GiB fails with `EFBIG` ("File too large"),
+  where Linux would extend a sparse file. The interface witness holds
+  the edge (`f:seek("set", 2^32)` then a write).
+- The clock origin `os.clock` counts from is one per module:
+  `luaw_main` after `luaw_init` restarts it for both states.

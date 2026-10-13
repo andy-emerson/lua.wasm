@@ -34,31 +34,39 @@
   // are done in Lua rather than through the C require, whose lua_call
   // boundary would stop a module's own require from yielding. What a
   // program sees is require's contract: package.preload, package.path,
-  // one load per name, package.loaded, the loader's two results.
+  // one load per name, package.loaded, the loader's two results, and the
+  // stock error texts (asserted against native lua by the files page).
   const FETCH = '\0lua.js:fetch:';
   const REQUIRE_SHIM = `
     local loaded, preload, searchpath = package.loaded, package.preload, package.searchpath
     local function load_from(name, path)
       local f, err = loadfile(path)
-      if not f then error("error loading module '" .. name .. "' from file '" .. path .. "':\\n\\t" .. err, 3) end
+      -- level 0: stock raises this from inside the C searcher, so it carries no position
+      if not f then error("error loading module '" .. name .. "' from file '" .. path .. "':\\n\\t" .. err, 0) end
       local r = f(name, path)
       if r ~= nil then loaded[name] = r end
       if loaded[name] == nil then loaded[name] = true end
       return loaded[name], path
     end
-    -- the "no file" lines stock require lists after the preload field:
-    -- package.path, then package.cpath, then (for a dotted name) the
-    -- all-in-one loader's search of cpath for the root name
+    -- the "no file" lines stock require lists after the preload field,
+    -- each searcher's list behind its own newline and tab: package.path,
+    -- then package.cpath, then (for a dotted name) the all-in-one
+    -- loader's search of cpath for the root name
     local function notfound(name)
       local _, err = searchpath(name, package.path)
       local _, cerr = searchpath(name, package.cpath)
-      local msg = "module '" .. name .. "' not found:\\n\\tno field package.preload['" .. name .. "']" .. err .. cerr
+      local msg = "module '" .. name .. "' not found:\\n\\tno field package.preload['" .. name .. "']\\n\\t" .. err .. "\\n\\t" .. cerr
       local root = name:match("^([^.]+)%.")
-      if root then msg = msg .. select(2, searchpath(root, package.cpath)) end
+      if root then msg = msg .. "\\n\\t" .. select(2, searchpath(root, package.cpath)) end
       return msg
     end
-    function require(name)
-      name = tostring(name)
+    function require(...)
+      local name = ...
+      local t = type(name)
+      if t == "number" then name = tostring(name)
+      elseif t ~= "string" then
+        error("bad argument #1 to 'require' (string expected, got " .. (select("#", ...) == 0 and "no value" or t) .. ")", 2)
+      end
       local v = loaded[name]
       if v then return v end
       local pre = preload[name]

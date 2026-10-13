@@ -2,7 +2,7 @@
 <!-- load-to-first-print, as a page author uses lua.js: one script tag, one
      Lua tag; __load.firstPrint is performance.now() when "hello" arrived -->
 <html lang="en"><head><meta charset="utf-8"><title>load</title>
-<script>window.__load = {}; const rl = console.log.bind(console); console.log = (...a) => { if (a.join(' ') === 'hello' && !window.__load.firstPrint) window.__load.firstPrint = performance.now(); };</script>
+<script>window.__load = {}; console.log = (...a) => { if (a.join(' ') === 'hello' && !window.__load.firstPrint) window.__load.firstPrint = performance.now(); };</script>
 <script src="/lua.js"></script>
 </head><body>
 <script type="text/lua" data-output="console">print("hello")</script>

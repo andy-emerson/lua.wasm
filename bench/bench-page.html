@@ -14,9 +14,7 @@
 <script>
   // capture print output before any implementation binds console.log
   window.__out = [];
-  const realLog = console.log.bind(console);
   console.log = (...a) => { window.__out.push(a.join(' ') + '\n'); };
-  window.__realLog = realLog;
 </script>
 </head>
 <body>

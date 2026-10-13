@@ -6,7 +6,9 @@
 ** pattern that upstream Lua itself ships.
 **
 ** Build modes (default is the full `lua` interpreter):
-**   -DMAKE_LIB   just the core + libraries (no lua.c)
+**   -DMAKE_LIB   just the core + libraries (no lua.c). No build in this
+**                repository uses it; it is the shape the link-Lua-in
+**                reopen contract names (doc/history/wasi-sunset-2026-10-13.md)
 **   -DMAKE_LUA   the standalone interpreter (default); the wasm artifact
 **                adds -DMAKE_REACTOR for the luaw_* embedding interface
 */
@@ -73,9 +75,12 @@ extern int luaw_try (void *L, void (*f)(void *, void *), void *ud);
 #define luai_jmpbuf       int  /* unused */
 #endif /* __wasm__ */
 
-/* If ever compiled as C++ (the wasm build no longer is), keep C linkage
-** throughout: the exports, the libc and the OS layer in port/ must agree
-** on symbol names. */
+/* If ever compiled as C++, keep C linkage throughout: the exports, the
+** libc and the OS layer in port/ must agree on symbol names. No build
+** here compiles this file as C++ any more (the wasm build did until the
+** optimization round moved the throw and catch into port/luaw-eh.cpp);
+** this and the LUAI_DDEC branch above are dormant, kept with -DMAKE_LIB
+** as the link-Lua-in reopen contract. */
 #if defined(__cplusplus)
 extern "C" {
 #endif
@@ -186,7 +191,10 @@ static const char *const LUAW_MSGKEY = "luaw.message";
 
 /* os.exit (D3): musl flushes stdio, the OS layer (port/luaw-sys.c)
    records the status and traps. Nothing inside can intercept it, and
-   the instance is finished: every entry below refuses from then on. */
+   the VM is finished: every entry below that runs Lua refuses from then
+   on. The filesystem exports, luaw_setenv and the buffers keep working
+   (the libc is intact), so a host can still collect what the program
+   wrote before it exited. */
 extern int luaw_exited;
 extern int luaw_exit_status;
 #define LUAW_ENTRY_GUARD(ret) \

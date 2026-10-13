@@ -2,7 +2,7 @@
 <!-- load-to-first-print, as Wasmoon's README shows: its script, a factory
      pointed at the local glue.wasm, createEngine, doString -->
 <html lang="en"><head><meta charset="utf-8"><title>load</title>
-<script>window.__load = {}; const rl = console.log.bind(console); console.log = (...a) => { if (a.join(' ') === 'hello' && !window.__load.firstPrint) window.__load.firstPrint = performance.now(); };</script>
+<script>window.__load = {}; console.log = (...a) => { if (a.join(' ') === 'hello' && !window.__load.firstPrint) window.__load.firstPrint = performance.now(); };</script>
 <script src="/vendor/wasmoon/index.js"></script>
 </head><body>
 <script>
