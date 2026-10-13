@@ -140,3 +140,79 @@ Chromium 141 = V8 14.1, Node 22 = V8 12.4):
 
 `legacy` exists only as a bridge for toolchains stuck below clang 20 targeting
 browsers/Node exclusively; there is no other reason to choose it.
+
+## The browser-native artifact: `lua-next.wasm` (pre-cutover)
+
+The artifacts above are built for WASI and need a WASI emulation layer in
+a browser. Their replacement, built beside them until the cutover (merge
+3 of the plan in [`history/browser-native-2026-10-13.md`](history/browser-native-2026-10-13.md)),
+is stock Lua 5.4.8 on upstream musl with three plain imports and no
+Emscripten; it will become `lua.wasm`. Until then it builds as
+`lua-next.wasm` and is not released.
+
+```bash
+make wasm-next WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar" \
+     WASM_CLANGXX="python3 -m ziglang c++" \
+     WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling" \
+     WASM_OPT=node_modules/binaryen/bin/wasm-opt        # npm i binaryen@132.0.0
+node scripts/next-run.mjs lua-next.wasm -- -e 'print("hello")'   # the lua command line
+```
+
+**What it is made of.** `third_party/musl` is verbatim musl 1.2.6
+(`scripts/verify-musl.sh`), compiled for wasm32 by `port/musl.mk` with
+the arch in `port/wasm32`. Under it, `port/luaw-sys.c` answers musl's
+Linux syscalls inside the module (stdio as a terminal, a clock whose
+reads never repeat, mmap over 4 KiB pages with reuse, exit as a trap)
+and `port/luaw-fs.c` is the in-memory filesystem (directories as
+entries, `/` and `/tmp` from the start, Linux errno and semantics
+where Lua can observe them). Lua is compiled as C++ for wasm exception
+handling, exactly as the WASI build is, with `-DLUA_USE_LINUX` and
+`-DLUAW_MUSL` (musl's own `tmpnam`, `tmpfile`, `fopen`, `setlocale`,
+`system`; none of the wasi-libc patches). The release form is stripped
+and passed through Binaryen's `wasm-opt -O3`; the witnesses run on that
+file.
+
+**The host contract.** Three imports in module `luaw`:
+`write(fd, ptr, len)` (fd 1 stdout, 2 stderr), `now() -> f64`
+(milliseconds since the epoch), `read(ptr, maxlen) -> n` (stdin; 0 at end
+of input). Exports: `memory`, `_initialize`; `luaw_init`, `luaw_run`,
+`luaw_last_error`, `luaw_alloc`/`luaw_free`; `luaw_start` and
+`luaw_step(msg, len)` with `luaw_message(len_out)` (the resident program's
+`coroutine.yield` carries a string each way); `luaw_main(argc, argv)`
+(stock `lua.c`); `luaw_fs_put`/`luaw_fs_get`/`luaw_fs_remove`/
+`luaw_fs_list`/`luaw_fs_mkdir`; `luaw_setenv`; `luaw_exit_code`.
+`os.exit` flushes stdio, records its status and traps -- the one thing
+that unwinds into the host; `pcall` cannot intercept it, and every
+entry refuses afterwards with "VM exited". [`scripts/next-host.mjs`](../scripts/next-host.mjs)
+is a host in plain JavaScript (the Node witnesses and the browser page
+share it) and the reference for calling all of this.
+
+**Reference behaviour: Lua 5.4.8 on musl Linux, bugs included.** The
+oracle is that interpreter built natively against the same musl
+(`make lua-musl`); `make next-differential` runs the corpus in
+`port/test/diff` on both and requires byte-identical stdout, stderr and
+exit status. Two consequences worth knowing: `os.setlocale("pt_BR")`
+returns `"pt_BR"` and keeps the `.` decimal point (musl implements no
+locale-specific numeric formatting), and `io.popen`/`os.execute`
+fail as on a machine with no shell. Local time is musl's: `TZ` (a POSIX
+rule or a zone name under `/usr/share/zoneinfo`) or `/etc/localtime`
+(a zone file the host puts in, which musl memory-maps), else UTC.
+
+**Witnesses** (all in `witness.yml`'s `next` and `next-browser` jobs):
+`make libc-smoke` and `make libc-stress` on the libc alone;
+`scripts/next-interface.mjs` (every import and export, the exit path,
+the message channel, the adversarial battery); `scripts/next-suite.mjs`
+(the full official suite in portable mode through `luaw_main`, Node)
+and `scripts/next-browser.mjs` (the same in Chromium, Firefox and
+WebKit from a page with no special headers, `crossOriginIsolated`
+asserted false); `make next-differential`. Two test-setup adaptations,
+both documented in the runners and neither a product change: the suite
+runs with a `LUA_INIT` prelude that makes `os.setlocale("pt_BR")`
+report failure (`literals.lua` assumes a successful `setlocale` changed
+the decimal point, which musl never does -- native Lua on musl fails the
+same assertion), and with `PATH` set, because `files.lua` asserts a
+process environment has one.
+
+**Not yet:** the cutover (merge 3) renames it to `lua.wasm`, removes the
+WASI artifacts and their runners, and rewrites the README for it; the
+`lua.js` loader for `<script type="text/lua">` is merge 4 (issue #52).

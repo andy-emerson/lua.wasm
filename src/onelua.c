@@ -174,6 +174,12 @@ _Noreturn void __wasm_longjmp (void *env, int val) {
 
 #endif /* __cplusplus */
 
+/* The hosted-libc corners below patch wasi-libc. The musl build
+   (-DLUAW_MUSL, port/musl.mk) takes musl's own answers unmodified: its
+   reference behaviour is Lua 5.4.8 on musl Linux, bugs included
+   (doc/history/browser-native-2026-10-13.md). */
+#if !defined(LUAW_MUSL)
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -255,6 +261,7 @@ char *setlocale (int category, const char *locale) {
 }  /* extern "C" */
 #endif
 
+#endif /* !LUAW_MUSL */
 
 #endif /* __wasm__ */
 
@@ -341,9 +348,12 @@ static void luaw_ltests_openlibs (lua_State *L) {
 /*
 ** ── The embedding interface ─────────────────────────────────────────
 ** MAKE_REACTOR wasm builds are reactors: the host calls in, the VM
-** returns. The host interface is WASI (stdio, filesystem, clock --
-** print() arrives at the host as fd_write on fd 1) plus the exports
-** below, and nothing else.
+** returns. The host interface is the exports below plus what the libc
+** underneath imports: on the musl build (-DLUAW_MUSL, the browser-native
+** artifact) the three luaw imports of port/luaw-sys.c -- write, now,
+** read -- and nothing else; on the WASI build, until the cutover, WASI
+** (stdio, filesystem, clock -- print() arrives at the host as fd_write
+** on fd 1).
 **
 ** This glue is opt-in (-DMAKE_REACTOR, set by the Makefile's wasm-lib
 ** target), NOT implied by MAKE_LIB. A downstream that links Lua into
@@ -371,6 +381,20 @@ static lua_State *luaw_L = NULL;
 
 static const char *const LUAW_ERRKEY = "luaw.error";
 static const char *const LUAW_COKEY  = "luaw.coroutine";
+static const char *const LUAW_MSGKEY = "luaw.message";
+
+#if defined(LUAW_MUSL)
+/* os.exit (D3): musl flushes stdio, the OS layer (port/luaw-sys.c)
+   records the status and traps. Nothing inside can intercept it, and
+   the instance is finished: every entry below refuses from then on. */
+extern int luaw_exited;
+extern int luaw_exit_status;
+#else
+static int luaw_exited = 0;
+static int luaw_exit_status = 0;
+#endif
+#define LUAW_ENTRY_GUARD(ret) \
+  do { if (luaw_exited) return (ret); } while (0)
 
 /* stash the error at the top of 'from's stack; keep it alive in the
    registry of the main state so the returned pointer stays valid */
@@ -388,6 +412,7 @@ static void luaw_clearerror (void) {
 
 /* create the VM: standard libraries; returns 0 on success */
 LUAW_API int luaw_init (void) {
+  LUAW_ENTRY_GUARD(LUA_ERRRUN);
   if (luaw_L != NULL) return 0;
   luaw_L = luaL_newstate();
   if (luaw_L == NULL) return LUA_ERRMEM;
@@ -403,6 +428,7 @@ LUAW_API void luaw_free (void *p) { free(p); }
    call succeeded; valid until the next entry call */
 LUAW_API const char *luaw_last_error (void) {
   const char *msg;
+  if (luaw_exited) return "VM exited";
   if (luaw_L == NULL) return "luaw_init has not been called";
   lua_getfield(luaw_L, LUA_REGISTRYINDEX, LUAW_ERRKEY);
   msg = lua_tostring(luaw_L, -1);
@@ -410,9 +436,23 @@ LUAW_API const char *luaw_last_error (void) {
   return msg;   /* string stays alive via the registry reference */
 }
 
+/* the status os.exit (or lua.c's main) ended the instance with; valid
+   once an entry call has trapped and luaw_last_error says "VM exited" */
+LUAW_API int luaw_exit_code (void) {
+  return luaw_exit_status;
+}
+
+/* set (or, with a NULL value, remove) an environment variable before
+   Lua reads it: TZ for local time, LUA_PATH, LUA_INIT, anything
+   os.getenv is asked for. The environment starts empty. 0 on success. */
+LUAW_API int luaw_setenv (const char *name, const char *value) {
+  return value ? setenv(name, value, 1) : unsetenv(name);
+}
+
 /* load and run a chunk to completion; returns a Lua status code */
 LUAW_API int luaw_run (const char *chunk, size_t len, const char *name) {
   int status;
+  LUAW_ENTRY_GUARD(LUA_ERRRUN);
   if (luaw_L == NULL) return LUA_ERRRUN;
   luaw_clearerror();
   status = luaL_loadbuffer(luaw_L, chunk, len, name ? name : "=(embedded)");
@@ -428,6 +468,7 @@ LUAW_API int luaw_run (const char *chunk, size_t len, const char *name) {
 LUAW_API int luaw_start (const char *chunk, size_t len, const char *name) {
   int status;
   lua_State *co;
+  LUAW_ENTRY_GUARD(LUA_ERRRUN);
   if (luaw_L == NULL) return LUA_ERRRUN;
   luaw_clearerror();
   co = lua_newthread(luaw_L);
@@ -438,15 +479,25 @@ LUAW_API int luaw_start (const char *chunk, size_t len, const char *name) {
     return status;
   }
   lua_setfield(luaw_L, LUA_REGISTRYINDEX, LUAW_COKEY);
+  lua_pushnil(luaw_L);
+  lua_setfield(luaw_L, LUA_REGISTRYINDEX, LUAW_MSGKEY);
   return LUA_OK;
 }
 
 /* resume the resident program for one step. LUA_YIELD: it yielded and
    is still alive -- call again next frame. LUA_OK: it finished. Any
-   other status: it failed; the message is in luaw_last_error(). */
-LUAW_API int luaw_step (void) {
-  int status, nres;
+   other status: it failed; the message is in luaw_last_error().
+
+   The message channel (D2b): the program's first yield value, if it is
+   a string or a number, is kept for luaw_message(); what the host
+   passes here (msg, or NULL for none) becomes the value its
+   coroutine.yield() returns. A program that wants nothing from the
+   host yields nothing and ignores yield's result; the first resume
+   delivers msg as the chunk's argument (...). */
+LUAW_API int luaw_step (const char *msg, size_t len) {
+  int status, nres, nargs = 0;
   lua_State *co;
+  LUAW_ENTRY_GUARD(LUA_ERRRUN);
   if (luaw_L == NULL) return LUA_ERRRUN;
   luaw_clearerror();
   lua_getfield(luaw_L, LUA_REGISTRYINDEX, LUAW_COKEY);
@@ -457,19 +508,55 @@ LUAW_API int luaw_step (void) {
     lua_setfield(luaw_L, LUA_REGISTRYINDEX, LUAW_ERRKEY);
     return LUA_ERRRUN;
   }
-  status = lua_resume(co, luaw_L, 0, &nres);
+  if (msg != NULL) {
+    lua_pushlstring(co, msg, len);
+    nargs = 1;
+  }
+  status = lua_resume(co, luaw_L, nargs, &nres);
   if (status == LUA_YIELD) {
-    lua_pop(co, nres);   /* yield values are the host's business only
-                            through WASI for now; keep the contract small */
+    if (nres >= 1 && lua_isstring(co, -nres)) {
+      lua_pushvalue(co, -nres);
+      lua_xmove(co, luaw_L, 1);
+    }
+    else lua_pushnil(luaw_L);
+    lua_setfield(luaw_L, LUA_REGISTRYINDEX, LUAW_MSGKEY);
+    lua_pop(co, nres);
     return LUA_YIELD;
   }
   if (status != LUA_OK)
     luaw_seterror(co);
+  else
+    lua_pop(co, nres);   /* return values at the end are not messages */
   /* finished or failed either way: release the program */
   lua_pushnil(luaw_L);
   lua_setfield(luaw_L, LUA_REGISTRYINDEX, LUAW_COKEY);
   return status;
 }
+
+/* what the resident program yielded on the last luaw_step (bytes and
+   length; may contain NULs), or NULL if it yielded nothing usable;
+   valid until the next entry call */
+LUAW_API const char *luaw_message (size_t *len) {
+  const char *s;
+  size_t n = 0;
+  if (luaw_L == NULL) { if (len) *len = 0; return NULL; }
+  lua_getfield(luaw_L, LUA_REGISTRYINDEX, LUAW_MSGKEY);
+  s = lua_tolstring(luaw_L, -1, &n);
+  lua_pop(luaw_L, 1);
+  if (len) *len = s ? n : 0;
+  return s;   /* alive via the registry reference */
+}
+
+#if defined(MAKE_LUA)
+/* the stock standalone interpreter, lua.c's main, with its own state:
+   `lua [options] [script [args]]` exactly as the command line, argv[0]
+   the program name. Returns its exit status; os.exit inside it traps
+   like anywhere else (luaw_exit_code then holds the status). */
+LUAW_API int luaw_main (int argc, char **argv) {
+  LUAW_ENTRY_GUARD(1);
+  return main(argc, argv);
+}
+#endif
 
 #endif /* __wasm__ && MAKE_REACTOR */
 

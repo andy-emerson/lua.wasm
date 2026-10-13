@@ -256,7 +256,73 @@ liblua.a:
 	cp $(LUA_PUB_HEADERS) $(LUA_INCDIR)/
 	@echo "built $(LUA_A) + public headers in $(LUA_INCDIR)/ for wasm32-wasi"
 
+# ── The C library for the browser-native artifact: upstream musl ──────────
+# Rules in port/musl.mk (vendored tree in third_party/musl, arch in
+# port/wasm32, the OS under it in port/luaw-sys.c). `make musl-libc`
+# builds build/musl/libc.a; the artifact targets that use it follow.
+include port/musl.mk
+
+# The browser-native artifact, under its pre-cutover name (merge 2 of the
+# plan in doc/history/browser-native-2026-10-13.md builds it beside the WASI
+# artifacts above; merge 3 renames it to lua.wasm and removes them).
+# Stock Lua 5.4.8, compiled as C++ for wasm exception handling exactly as
+# the WASI build is, against musl's public headers; -DLUA_USE_LINUX so the
+# libc feature set (POSIX popen/dlopen entry points, isatty) matches the
+# native musl oracle the differential test compares against; -DLUAW_MUSL
+# drops the wasi-libc patches in onelua.c. Linked with the OS layer and
+# libc from port/musl.mk through the C++ driver, which supplies compiler-rt.
+WASM_NEXT_O= lua-next.wasm
+WASM_NEXT_CFLAGS= --target=wasm32-freestanding $(MUSL_SYSINC) -O2 -fno-strict-aliasing \
+	  -fwasm-exceptions -nostdlib++ -Isrc \
+	  -DLUA_USE_LINUX -DLUA_USE_JUMPTABLE=0 -DLUAW_MUSL \
+	  -DMAKE_LUA -DMAKE_REACTOR \
+	  $(WASM_EH_ENC_FLAGS) $(WASM_EXTRA)
+
+$(MUSL_BUILD)/onelua-next.o: src/onelua.c $(MUSL_GENH)
+	$(WASM_CLANGXX) $(WASM_NEXT_CFLAGS) -c -x c++ $< -o $@
+
+# Release form: debug sections stripped at link, then Binaryen's
+# wasm-opt -O3 (what Emscripten runs after every link; measured in the
+# design record: -10% size, +16% on a compute loop). WASM_OPT names the
+# binary (CI installs binaryen from npm: node_modules/binaryen/bin/
+# wasm-opt); WASM_OPT= empty skips the pass and ships the linked module.
+# The witnesses run on this file, so what is tested is what ships.
+WASM_OPT?= wasm-opt
+WASM_OPT_FLAGS= -O3 --enable-exception-handling --enable-bulk-memory \
+	  --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals \
+	  --enable-multivalue --enable-reference-types
+
+$(MUSL_BUILD)/lua-next.linked.wasm: $(MUSL_BUILD)/onelua-next.o $(MUSL_RT) $(MUSL_A)
+	$(WASM_CLANGXX) $(MUSL_LDFLAGS) -Wl,--strip-all $(MUSL_RT) $(MUSL_BUILD)/onelua-next.o $(MUSL_A) -o $@
+
+$(WASM_NEXT_O): $(MUSL_BUILD)/lua-next.linked.wasm
+	@if [ -n "$(WASM_OPT)" ]; then \
+	  echo "$(WASM_OPT) $(WASM_OPT_FLAGS) $< -o $@"; \
+	  $(WASM_OPT) $(WASM_OPT_FLAGS) $< -o $@; \
+	else cp $< $@; fi
+	@node -e 'const z=require("zlib"),b=require("fs").readFileSync(process.argv[1]);console.log(process.argv[1]+": "+b.length+" bytes ("+z.brotliCompressSync(b).length+" brotli, "+z.gzipSync(b,{level:9}).length+" gzip)")' $@
+
+wasm-next: $(WASM_NEXT_O)
+
+# The oracle for the differential test (scripts/next-differential.sh):
+# stock Lua 5.4.8 built natively for x86_64-linux-musl against the SAME
+# vendored musl the artifact uses, statically linked, same feature set
+# (-DLUA_USE_LINUX). zig's bundled x86_64 musl is the build's libc; the
+# oracle's point is behaviour, and musl 1.2.6 is what both compile against
+# for the public API. Needs a zig-based WASM_CC; see the Makefile header.
+NATIVE_MUSL_CC?= python3 -m ziglang cc
+NATIVE_MUSL_LUA= build/lua-musl
+$(NATIVE_MUSL_LUA): src/onelua.c
+	@mkdir -p $(@D)
+	$(NATIVE_MUSL_CC) -target x86_64-linux-musl -static -O2 -DLUA_USE_LINUX -DMAKE_LUA -Isrc -o $@ src/onelua.c -lm
+lua-musl: $(NATIVE_MUSL_LUA)
+
+# The differential witness: the corpus in port/test/diff on the artifact
+# and on the oracle, stdout, stderr and exit status compared byte for byte.
+next-differential: $(WASM_NEXT_O) $(NATIVE_MUSL_LUA)
+	sh scripts/next-differential.sh $(WASM_NEXT_O) $(NATIVE_MUSL_LUA)
+
 # list targets that do not create files (but not all makes understand .PHONY)
-.PHONY: all $(PLATS) clean test install uninstall local none dummy echo pc wasm liblua.a
+.PHONY: all $(PLATS) clean test install uninstall local none dummy echo pc wasm liblua.a wasm-next lua-musl next-differential
 
 # (end of Makefile)

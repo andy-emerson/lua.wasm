@@ -150,6 +150,72 @@ jobs:
           python3 scripts/suite-bundle.py
           && node scripts/browser-witness.mjs lua.wasm tests/suite-prefix-bundle.lua --engine ${{ matrix.engine }}
 
+  next:
+    # The browser-native artifact (doc/history/browser-native-2026-10-13.md,
+    # merge 2): stock Lua on vendored musl with three imports, built beside
+    # the WASI artifacts above until the cutover. Every witness here runs on
+    # the release form of the file (stripped, wasm-opt).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '>=24.15 <25'  # the standard EH encoding needs 24.15+ (D9)
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: toolchain (zig = clang 20.1.2 and the musl build's compiler; binaryen for wasm-opt)
+        run: python3 -m pip install 'ziglang==0.15.1' && npm i --no-save binaryen@132.0.0
+      - name: the libc alone -- smoke (printf/strtod exactness, errno, locale, stdin) and allocator stress
+        run: >
+          make libc-smoke libc-stress
+          WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar"
+      - name: build lua-next.wasm (release form) and print its size
+        run: >
+          make wasm-next
+          WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar"
+          WASM_CLANGXX="python3 -m ziglang c++"
+          WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling"
+          WASM_OPT=node_modules/binaryen/bin/wasm-opt
+      - name: host-interface witness (imports, exports, exit, messages, adversarial battery)
+        run: node scripts/next-interface.mjs lua-next.wasm
+      - name: full official suite through stock lua.c (luaw_main), Node
+        run: node scripts/next-suite.mjs lua-next.wasm tests
+      - name: differential against native Lua 5.4.8 on musl (byte-identical stdout, stderr, exit status)
+        run: >
+          make next-differential
+          WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar"
+          WASM_CLANGXX="python3 -m ziglang c++"
+          WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling"
+          WASM_OPT=node_modules/binaryen/bin/wasm-opt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lua-next.wasm
+          path: lua-next.wasm
+
+  next-browser:
+    # The full official suite on the browser-native artifact in all three
+    # engines, from a plain static page: no COOP/COEP, no SharedArrayBuffer,
+    # no workers (asserted: crossOriginIsolated must be false).
+    needs: next
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, webkit]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '>=24.15 <25'
+      - uses: actions/download-artifact@v4
+        with:
+          name: lua-next.wasm
+      - name: install ${{ matrix.engine }}
+        run: npm i --no-save playwright@1.61.1 && npx playwright install --with-deps ${{ matrix.engine }}
+      - name: full official suite in a real ${{ matrix.engine }}
+        run: node scripts/next-browser.mjs lua-next.wasm --engine ${{ matrix.engine }}
+
   provenance:
     runs-on: ubuntu-24.04
     steps:
