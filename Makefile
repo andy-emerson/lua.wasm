@@ -145,7 +145,7 @@ lua-js: $(LUA_JS)
 # linked from, above), lib/crt-reactor.o (named explicitly on
 # the link line, as crt objects are), include/ (Lua's four headers and
 # the libc's, laid out as a sysroot), src/ (the sources, a fallback for
-# unusual defines), PIN. lua.wasm is this archive linked with nothing
+# unusual defines), examples/embed (below), PIN. lua.wasm is this archive linked with nothing
 # added, which sdk-check proves by relinking it from the tarball alone.
 # A consumer with a real C++ runtime compiles port/luaw-eh.cpp itself
 # with -DLUAW_EXTERNAL_EH (src/ carries it). LINK.md joins in the doc
@@ -164,6 +164,7 @@ sdk: $(LUA_WASM_A) $(MUSL_BUILD)/luaw-crt.o
 	cp src/lua.h src/lauxlib.h src/lualib.h src/luaconf.h src/lua.hpp $(SDK_DIR)/include/
 	cp src/*.c src/*.h $(SDK_DIR)/src/ && cp port/luaw-eh.cpp port/luaw-crt.c port/luaw-sys.c port/luaw-fs.c $(SDK_DIR)/src/port/
 	printf 'lua.wasm %s\ncommit %s\nlua 5.4.8 verbatim; musl 1.2.6 verbatim\n' "$(SDK_VERSION)" "$$(git rev-parse HEAD 2>/dev/null || echo unknown)" > $(SDK_DIR)/PIN
+	mkdir -p $(SDK_DIR)/examples && cp -r examples/embed $(SDK_DIR)/examples/embed
 	[ -f doc/sdk/LINK.md ] && cp doc/sdk/LINK.md $(SDK_DIR)/LINK.md || true
 	tar czf $(SDK).tar.gz -C build/sdk $(SDK)
 	@ls -l $(SDK).tar.gz | awk '{print $$9": "$$5" bytes"}'
