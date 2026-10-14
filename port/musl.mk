@@ -9,8 +9,9 @@
 # directory; bits/syscall.h.in and the rest of bits/ are riscv32's,
 # verbatim -- the generic 32-bit tables -- except alltypes.h.in, where
 # _Addr and _Reg are long to match clang's wasm32 size_t and intptr_t),
-# the OS underneath is port/luaw-sys.c (one syscall dispatcher over the
-# three luaw imports), and the crt is port/luaw-crt.c (_initialize runs
+# the OS underneath is port/luaw-sys.c (one syscall dispatcher over
+# three of the four luaw imports; call, the bridge's, is onelua.c's),
+# and the crt is port/luaw-crt.c (_initialize runs
 # the constructors; no main).
 #
 # Only the source directories Lua's libc use reaches are compiled; the
@@ -18,11 +19,12 @@
 # nothing in the artifact. thread/__unmapself.c is inline asm for a
 # thread-exit path a single-threaded build never takes.
 #
-# Toolchain: a C compiler for wasm32 in WASM_CC (clang 20+; `python3 -m
-# ziglang cc` works and is what CI uses, see the Makefile header) and its
-# archiver in MUSL_AR. The target triple is wasm32-freestanding, the one
-# spelling both clang and zig accept. Linking through the same driver
-# with -nostdlib adds compiler-rt's builtins; nothing else is linked.
+# Toolchain: a C compiler for wasm32 in WASM_CC (clang-20 by default;
+# `python3 -m ziglang cc` is the alternative, see the Makefile header)
+# and its archiver in MUSL_AR. The target triple is wasm32-freestanding,
+# the one spelling both clang and zig accept. The link names LLVM's
+# compiler-rt builtins archive itself (MUSL_RTLIB, below): -nostdlib
+# links no runtime, and zig's own is kept out.
 
 MUSL_DIR=   third_party/musl
 MUSL_BUILD= build/musl
@@ -59,15 +61,23 @@ MUSL_SYSINC= -nostdinc -I$(MUSL_ARCH) -I$(MUSL_DIR)/arch/generic \
   -I$(MUSL_BUILD)/include -I$(MUSL_DIR)/include
 
 # Link line for a reactor on this libc: no entry, exports kept, the
-# stack size the artifact needs (deep Lua recursion). Order: crt, OS
-# layer, the program, libc, then compiler-rt's builtins: musl's printf
-# and frexpl reach 128-bit float helpers (__multf3, __eqtf2, ...) that
-# live in libclang_rt.builtins, and -nostdlib links no runtime on its
-# own. zig links its own compiler-rt with every link, so for it the
-# archive is not found and nothing is added; plain clang needs the
-# archive its driver names (libclang-rt-N-dev-wasm32), looked up in its
-# resource directory, where distributions have placed it under three
-# different names.
+# stack size the artifact needs (deep Lua recursion). Order: crt, the
+# program (an archive, pulled in by reference), then compiler-rt's
+# builtins: musl's printf and frexpl reach 128-bit float helpers
+# (__multf3, __eqtf2, ...) that live in libclang_rt.builtins, and
+# -nostdlib links no runtime on its own. Plain clang finds the archive
+# its driver names (libclang-rt-N-dev-wasm32) in its resource directory,
+# where distributions have placed it under three different names.
+#
+# zig's own compiler-rt is excluded (-rtlib=none): it is one object
+# whose weak symbols include a libm (exp, log, sin, fma, ...), and lld
+# takes a weak definition already in hand over an archive member not
+# yet pulled, so behind an archive it would replace musl's libm with
+# zig's (last-bit differences in exp/log and -nan for log(-1), caught
+# by the differential corpus). Under zig the builtins archive is named
+# explicitly: MUSL_RTLIB=<libclang_rt.builtins-wasm32.a>, the LLVM
+# builtins of any version (the distribution's libclang-rt-N-dev-wasm32
+# ships one; none of them carries a libm).
 MUSL_LDFLAGS= --target=wasm32-freestanding -nostdlib -Wl,--no-entry \
   -Wl,--export-dynamic -Wl,-z,stack-size=$(WASM_STACK)
 MUSL_RT= $(MUSL_BUILD)/luaw-crt.o $(MUSL_BUILD)/luaw-sys.o $(MUSL_BUILD)/luaw-fs.o
@@ -76,6 +86,17 @@ MUSL_RTLIB?= $(firstword $(wildcard $(MUSL_RESDIR)/lib/libclang_rt.builtins-wasm
   $(MUSL_RESDIR)/lib/wasi/libclang_rt.builtins-wasm32.a \
   $(MUSL_RESDIR)/lib/wasm32-*/libclang_rt.builtins.a \
   $(MUSL_RESDIR)/lib/wasm32-*/libclang_rt.builtins-wasm32.a))
+ifneq (,$(findstring zig,$(WASM_CC) $(WASM_CLANGXX)))
+MUSL_LDFLAGS+= -rtlib=none
+endif
+# every link runs this first: a link without the builtins archive would
+# fail on __multf3, with the reason hidden in the symbol
+musl-rtlib:
+	@if [ -z "$(MUSL_RTLIB)" ]; then \
+	  echo "MUSL_RTLIB is empty: no wasm32 compiler-rt builtins archive under $(WASM_CLANGXX)'s resource directory."; \
+	  echo "  plain clang: install the driver's libclang-rt-N-dev-wasm32 package;"; \
+	  echo "  zig: name LLVM's archive, e.g. MUSL_RTLIB=/usr/lib/llvm-18/lib/clang/18/lib/wasi/libclang_rt.builtins-wasm32.a (libclang-rt-18-dev-wasm32)"; \
+	  exit 1; fi
 
 $(MUSL_BUILD)/include/bits/alltypes.h: $(MUSL_ARCH)/bits/alltypes.h.in $(MUSL_DIR)/include/alltypes.h.in $(MUSL_DIR)/tools/mkalltypes.sed
 	@mkdir -p $(@D)
@@ -120,21 +141,21 @@ musl-libc: $(MUSL_RT) $(MUSL_A)
 # exercising what Lua leans on (printf/strtod exactness, malloc/realloc,
 # libm, time, a missing file's errno, musl's locale answer, stderr,
 # getenv, stdin through the read import), run by scripts/libc-smoke.mjs.
-$(MUSL_BUILD)/libc-smoke.wasm: port/test/libc-smoke.c $(MUSL_RT) $(MUSL_A)
+$(MUSL_BUILD)/libc-smoke.wasm: port/test/libc-smoke.c $(MUSL_RT) $(MUSL_A) | musl-rtlib
 	$(WASM_CC) --target=wasm32-freestanding $(MUSL_SYSINC) -O2 -Wall -c $< -o $(MUSL_BUILD)/libc-smoke.o
 	$(WASM_CC) $(MUSL_LDFLAGS) $(MUSL_RT) $(MUSL_BUILD)/libc-smoke.o $(MUSL_A) $(MUSL_RTLIB) -o $@
 
 libc-smoke: $(MUSL_BUILD)/libc-smoke.wasm
-	node scripts/libc-smoke.mjs $<
+	$(NODE) scripts/libc-smoke.mjs $<
 
 # The allocator and the OS layer's memory under stress (port/test/
 # alloc-stress.c): no corruption across 300k random operations, and no
 # growth once the working set is stable -- freed pages are reused.
-$(MUSL_BUILD)/alloc-stress.wasm: port/test/alloc-stress.c $(MUSL_RT) $(MUSL_A)
+$(MUSL_BUILD)/alloc-stress.wasm: port/test/alloc-stress.c $(MUSL_RT) $(MUSL_A) | musl-rtlib
 	$(WASM_CC) --target=wasm32-freestanding $(MUSL_SYSINC) -O2 -Wall -c $< -o $(MUSL_BUILD)/alloc-stress.o
 	$(WASM_CC) $(MUSL_LDFLAGS) $(MUSL_RT) $(MUSL_BUILD)/alloc-stress.o $(MUSL_A) $(MUSL_RTLIB) -o $@
 
 libc-stress: $(MUSL_BUILD)/alloc-stress.wasm
-	node scripts/libc-stress.mjs $<
+	$(NODE) scripts/libc-stress.mjs $<
 
-.PHONY: musl-libc libc-smoke libc-stress
+.PHONY: musl-libc musl-rtlib libc-smoke libc-stress

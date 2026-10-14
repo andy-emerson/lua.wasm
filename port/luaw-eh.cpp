@@ -36,6 +36,14 @@
 extern "C" {
 
 /* ── the micro-runtime: what clang's throw/catch lower to ────────── */
+/* LUAW_EXTERNAL_EH: a consumer that links a real C++ runtime (a
+   libc++abi built with wasm EH -- love.wasm does) defines this when
+   compiling the unit, and the micro-runtime below steps aside so that
+   runtime owns exception dispatch: Lua's throw and the consumer's typed
+   exceptions then travel one coherent EH domain. luaw_throw and luaw_try
+   are unchanged; only the __cxa_* definitions and the dummy typeinfo
+   are left out. This mode is witnessed by its consumer, not here. */
+#ifndef LUAW_EXTERNAL_EH
 struct __luawasm_eh_header {
   void *typeinfo;
   void (*dtor)(void *);
@@ -77,6 +85,8 @@ char __luawasm_class_ti_vtable[32] __asm__("_ZTVN10__cxxabiv117__class_type_info
 
 void __luawasm_terminate (void) __asm__("_ZSt9terminatev");
 void __luawasm_terminate (void) { abort(); }
+
+#endif /* !LUAW_EXTERNAL_EH */
 
 /* ── Lua's non-local jump (ldo.c's LUAI_THROW / LUAI_TRY) ─────────── */
 /* thrown as a pointer to a type of this unit's own, so clang emits its

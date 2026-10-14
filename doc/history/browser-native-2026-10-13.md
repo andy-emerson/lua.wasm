@@ -159,14 +159,16 @@ Conventions settled alongside, now design:
 | **D3** | `os.exit` | Flush stdio, record the code (`luaw_exit_code`), trap. The one thing that unwinds into the host; every later `luaw_*` call refuses with "VM exited". | Exit as a thrown exception (Lua's catch-all would swallow it, so `pcall(os.exit)` would survive); disabling `os.exit` (not stock). |
 | **D4** | Files | An in-memory filesystem inside the module (`/` is the working directory; no persistence), filled and drained through the `luaw_fs_*` exports. Pyodide and Wasmoon both keep files in memory. *Corrected in merge 2:* directories are entries, not path prefixes — the official suite requires `fopen("")` to fail and creating a file in a missing directory to fail with `ENOENT`, as Linux does; `/` and `/tmp` exist from the start, `luaw_fs_put` creates parents, `luaw_fs_mkdir` is the host's `mkdir -p`. | Host-backed folders through a file import — the one real use is a portable `lua` command reading real disk. Reopen if that use case appears. |
 | **D5** | Local time, environment | musl's stock handling: `TZ` or `/etc/localtime`, else UTC. The environment starts empty; hosts add to it with `luaw_setenv`. `lua.js` will generate the visitor's zone file from the browser's own rules (merge 4); until then hosts supply `TZ` or a zone file. Needs file-backed `mmap` in the syscall layer (musl memory-maps zone files). | A time-zone import (modifies musl); shipping the tz database (size, upkeep). |
-| **D6** | Removals | `lua-lib.wasm` as a separate artifact; the WASI build and runners; the link-Lua-in shape (`liblua.a`, `examples/embed/`, `doc/embedding.md`, `WASM_EH=external`); the unused C sjlj path; the `onelua.c` WASI workarounds (`tmpnam`, `tmpfile`, `fopen("")`, `setlocale`, `system`); the legacy EH encoding (per D9). Deep-witness is retargeted, not removed. *Done in merge 3*: the removal record with each item's reopen condition is [`wasi-sunset-2026-10-13.md`](wasi-sunset-2026-10-13.md). | See the removal record. |
+| **D6** | Removals | `lua-lib.wasm` as a separate artifact; the WASI build and runners; the link-Lua-in shape (`liblua.a`, `examples/embed/`, `doc/embedding.md`, `WASM_EH=external`) — *re-landed 2026-10-14* as the tarball of the artifact's own objects, not a `MAKE_LIB` build (the embedding principle, below); the unused C sjlj path; the `onelua.c` WASI workarounds (`tmpnam`, `tmpfile`, `fopen("")`, `setlocale`, `system`); the legacy EH encoding (per D9). Deep-witness is retargeted, not removed. *Done in merge 3*: the removal record with each item's reopen condition is [`wasi-sunset-2026-10-13.md`](wasi-sunset-2026-10-13.md). | See the removal record. |
 | **D7** | stdin | The host plays the environment: the `read` import answers with typed text, piped data or end of input (0). Stock `io.read` throughout; stock interactive `lua` works under Node through `luaw_main`. *As built:* `scripts/lua.mjs` reads stdin whole before Lua starts and does not forward a terminal's typed input, so `lua -i` under it sees end of input; the interactive REPL under Node is not built. | Always-empty stdin and pre-supplied-only stdin (each hard-wires one environment into the module). |
 | **D8** | `lua.js` defaults | Closed 2026-10-13; the fifteen rows and their outcomes are in the section below. In one line: a `<script type="text/lua">` tag's terminal is the page, a JavaScript call's terminal is the console; Lua behaviour stays Lua's; every tag runs as the resident coroutine; one file, `lua.js`, with the module inlined; a JavaScript surface that is the module's own contract now and a bridge next (D11, closed below). | See the section. |
 | **D9** | Supported runtimes | Standard EH encoding only. Floors (webassembly.org feature data, `exceptionsFinal`): Chrome 137, Firefox 131, Safari 18.4, Node 24.15, Deno 2.3.2, wasmtime 47. CI: current Chromium, Firefox, WebKit; Node ≥ 24.15. | Shipping the legacy encoding too (deprecated; a documented V8 12.x host crash; untestable old Safari). Reopen if real users turn up on older devices. |
 | **D10** | How it lands | Four merges: (1) this record and vendored musl; (2) the new artifact built and tested beside today's; (3) the cutover and removals; (4) `lua.js`. *Merges 1–3 landed 2026-10-13; merge 4 built the same day on D8.* | One or two large merges. |
 
-Deferred, recorded as open work: a non-JavaScript host test (wasmtime,
-issue #53) — "runs in any wasm host" is not claimed until one exists; a
+A non-JavaScript host test (wasmtime, issue #53) was deferred here and
+closed as out of scope on 2026-10-14: the target is Lua on the web, and
+browsers and Node are what is witnessed; reopen if a consumer asks for
+a wasm-runtime host. Also recorded then as open work: a
 reproducible benchmark against Wasmoon in the repo (issue #54; the
 numbers above are session observations; landed as `doc/bench.md`); **D11**,
 the bridge, closed below (2026-10-14) and gating merge 5.
@@ -276,7 +278,7 @@ cannot express.
 the `js` library is Lua source embedded in `src/onelua.c`'s
 host-interface section and registered in `package.preload` at
 `luaw_init`, so `lua.wasm` alone carries the whole Lua-side API and any
-host — lua.js, a Node host, a wasmtime host, an M6 link-in consumer in
+host — lua.js, a Node host, an M6 link-in consumer in
 C — gets it by implementing the one import and feeding settle messages
 through `luaw_step`. The core stays verbatim: this is port code beside
 `luaw_run`. The `require` shim moves the same way for the same reason;
@@ -296,6 +298,110 @@ namespace.
 end to end with Lua computing and the page rendering — against Wasmoon
 and fengari, reported whichever way it falls. M5 is not done on
 ergonomics alone. The use-case table that framed D11 stays in #58.
+
+## The embedding principle (2026-10-14)
+
+Closed by the Human after M5, with love.wasm and tallydb in view as
+the two consumers that bring compiled code of their own. It settles
+what "Lua embeds on the web" means, which product serves which
+consumer, and why there are exactly three things in a release.
+
+**The standard.** Stock Lua embeds through its C API, and on the web
+that does not change. What the web adds is only where the OS went: a
+wasm module has no libc and no operating system, so the embedding
+carries them. The standard is therefore:
+
+1. stock Lua's C API, verbatim, witnessed by the official suite and
+   the differential;
+2. a libc and an OS inside the module — musl, the port, the in-memory
+   filesystem, the clock, `exit` — which the embedder links and does
+   not write;
+3. four imports the host supplies — `luaw.write`, `luaw.now`,
+   `luaw.read`, `luaw.call` — the whole surface between module and
+   host, documented with their signatures in `wasm.md`;
+4. Lua's errors on wasm exception handling through one unit the
+   embedder links, which defers to a real C++ runtime when the embedder
+   has one;
+5. optionally, `luaw_openlibs` for the `js` library and the fetching
+   `require`, and the `luaw_*` exports for a host that drives Lua from
+   JavaScript.
+
+It is reactor-shaped: the host calls `_initialize` and then the
+exports, and the module stays alive between calls, because a page
+cannot block and the frame model needs the module alive across
+frames. It carries things a given consumer does not need (a game
+engine needs no filesystem; a database needs no reactor) and that is
+accepted: it carries everything stock Lua has.
+
+**One build, three things, each made from the one before.**
+
+| what | form | for whom |
+|---|---|---|
+| the tarball | `liblua-wasm.a` (our four objects and musl's; the crt stays outside it), the headers, the sources as a fallback for unusual defines, the link notes | a consumer with compiled code of its own (C, C++, Rust compiled to wasm32), who must link Lua into the same module as that code to call its C API |
+| `lua.wasm` | the archive linked with nothing added: the final link | consumers with no compiled code of their own, who drive Lua from outside; in this project that is `lua.js`, so `lua.wasm` is carried inside it and attached to the release as the certified module the witnesses ran on, not presented as a product |
+| `lua.js` | `lua.wasm` inside the loader | pages and JavaScript applications, in all four directions (Lua in HTML, Lua from JavaScript, JavaScript from Lua through `Lua.js`, HTML and JavaScript from Lua through the page's own `eval`/`html` registrations) |
+
+The archive is already compiled: a consumer compiles its own code and
+links, so every consumer runs the identical bytes the witnesses
+certified, which is what the source-drop arrangement could not give.
+`lua.wasm` is the one link a JavaScript consumer cannot do for itself,
+done once here. Nothing is built twice, so nothing drifts; one version
+is stamped on all three.
+
+**Acquisition, by use case.** A page author links `lua.js` from the
+project's site at a versioned path with an SRI hash, or downloads it
+beside the page. A JavaScript application vendors the same file and
+uses the `Lua` global (packaging gives it a DOM guard, `Lua.create()`
+and types so it serves Node and several VMs). A C, C++ or Rust
+program downloads the tarball from the release, points its toolchain
+at it (as built: `-isystem` for the headers and `-L` for the library,
+since not every driver adds a freestanding sysroot's include directory;
+or Cargo's link search path), names one library, supplies the four imports from its host, and pins the
+version; the tarball's notes (`doc/sdk/LINK.md`) carry the link line,
+the four signatures, the reactor shape, the builtins archive the link
+needs and the C++ EH line. The consumer's own compiler has no floor
+(the archive was built with clang 20; the consumer's C needs nothing
+newer); the module runs where the standard EH encoding runs.
+
+**The toolchain, settled with it (2026-10-14).** The Makefile defaults
+(llvm.org clang-20, lld-20, LLVM's wasm32 builtins) are what CI and
+the release build with; zig 0.15.1 is the alternative recipe, witnessed
+by the deep witness, and the compiler of the native musl oracle. The
+archive link decided it: zig's bundled compiler-rt is one object whose
+weak symbols include a libm, and behind an archive lld keeps that over
+musl's members — the differential caught `exp`, `log` and `log(-1)`
+differing — so a zig link excludes it (`-rtlib=none`) and names LLVM's
+builtins; a consumer linking the tarball with `zig cc` does the same.
+Rejected: keeping zig as CI's compiler with that exclusion (one more
+zig-only rule in the toolchain the README calls the default), and
+linking `onelua.o` as an object again to dodge it (hides the problem
+for this build only; the tarball would no longer relink byte-identical).
+
+**Rejected, with reopen triggers.**
+
+- A command crt (`_start`, `main`): serves the WASI command-line
+  world, which neither Wasmoon nor fengari serve and native Lua serves
+  better; our modules would still need a host for the four imports.
+  Reopen if a consumer asks.
+- A wasmtime or other non-JavaScript runtime witness (#53, closed):
+  browsers and Node are the witnessed hosts and the target is the web.
+  Reopen if a consumer asks for such a host.
+- A partial link (`wasm-ld -r`) instead of the archive: the same one
+  flag for the consumer, less conventional, and indivisible.
+- `lua.wasm` as a product beside the other two: it is the final link
+  for one family of consumers, and that family is served by `lua.js`.
+- Lua compiled a second way (`MAKE_LIB`) for the tarball: the
+  artifact's own object serves every consumer once `lua.c`'s `main` no
+  longer collides with a consumer's; a second compile would be a
+  second product that could drift.
+- npm: not a second build (the release's own files uploaded by the
+  same workflow), deferred until the project's name is settled.
+- Loading the module through ESM source phase imports in `lua.js` or
+  `host.mjs`: the user's two lines would not change; take it when the
+  three engines ship it unflagged and the common bundlers resolve it.
+- Wasm dynamic linking (the C API exported across a module boundary so
+  a consumer could add code to a finished `lua.wasm`): a different and
+  much larger project; not pursued.
 
 ## What this does not change
 

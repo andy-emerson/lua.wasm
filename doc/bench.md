@@ -16,7 +16,7 @@ Workloads are written for Lua 5.3 and 5.4 (fengari is 5.3).
 
 A number is only as good as its run: each table names its engine,
 date and commit. Two sets are kept: the **current** tables, taken with
-the bridge (M5) and its four workloads, and the **baseline** taken
+the bridge (the `js` library over `luaw.call`) and its four workloads, and the **baseline** taken
 before the optimization round (issue #54), so the distance travelled is
 readable; the optimization round's own tables are cited in
 [`history/perf-research-2026-10-13.md`](history/perf-research-2026-10-13.md).

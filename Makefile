@@ -17,22 +17,29 @@ $(PLATS) clean:
 # catch(...)-only micro-runtime; no libc++abi), on upstream musl (third_party/musl, verbatim; built for wasm32 by
 # port/musl.mk) with the OS under it in port/ (luaw-sys.c, luaw-fs.c).
 # The module imports exactly four functions -- luaw.write, luaw.now,
-# luaw.read, luaw.call -- and runs in any current browser from a plain page, in
-# Node >= 24.15, or in any wasm runtime with the standard exception-
-# handling encoding. Design: doc/history/browser-native-2026-10-13.md;
+# luaw.read, luaw.call -- and runs in any current browser from a plain page and in
+# Node >= 24.15 (the two hosts that are witnessed; the target is Lua on
+# the web, D9). Design: doc/history/browser-native-2026-10-13.md;
 # contract and witnesses: doc/wasm.md.
 #
-# Toolchain: clang 20+ (the standard EH encoding) with its wasm32
-# compiler-rt builtins. `zig c++` / `zig cc` is a self-contained clang
-# 20.1.2 that brings those along, and is what CI uses:
+# Toolchain: clang 20+ (the standard EH encoding) with LLVM's wasm32
+# compiler-rt builtins -- the defaults below (clang-20, clang++-20,
+# llvm-ar; llvm.org's packages clang-20 lld-20 libclang-rt-20-dev-wasm32),
+# which is what CI and the release build with:
+#   make wasm MUSL_AR=llvm-ar-20 WASM_OPT=node_modules/binaryen/bin/wasm-opt
+# The zig recipe (zig 0.15.1 = a self-contained clang 20.1.2, no apt
+# repository) builds the same artifact; zig's own compiler-rt stays out
+# of the link (it carries a libm; port/musl.mk), so the builtins archive
+# is named:
 #   make wasm WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar" \
 #             WASM_CLANGXX="python3 -m ziglang c++" \
 #             WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling" \
+#             MUSL_RTLIB=/usr/lib/llvm-18/lib/clang/18/lib/wasi/libclang_rt.builtins-wasm32.a \
 #             WASM_OPT=node_modules/binaryen/bin/wasm-opt
-# Plain clang 20: WASM_CC=clang-20 MUSL_AR=llvm-ar-20 WASM_CLANGXX=clang++-20
-# (needs libclang-rt's wasm32 builtins installed). Run it:
+# Run it:
 #   node scripts/lua.mjs lua.wasm -- script.lua
 WASM_CLANGXX= clang++-20
+NODE?= node
 WASM_STACK= 8388608
 WASM_O= lua.wasm
 WASM_EXTRA=
@@ -95,15 +102,28 @@ $(MUSL_BUILD)/onelua.o: src/onelua.c $(MUSL_GENH)
 $(MUSL_BUILD)/luaw-eh.o: port/luaw-eh.cpp $(MUSL_GENH)
 	$(WASM_CLANGXX) $(WASM_EHFLAGS) -c $< -o $@
 
-$(MUSL_BUILD)/lua.linked.wasm: $(MUSL_BUILD)/onelua.o $(MUSL_BUILD)/luaw-eh.o $(MUSL_RT) $(MUSL_A)
-	$(WASM_CLANGXX) $(MUSL_LDFLAGS) -Wl,--strip-all $(MUSL_RT) $(MUSL_BUILD)/onelua.o $(MUSL_BUILD)/luaw-eh.o $(MUSL_A) $(MUSL_RTLIB) -o $@
+# The archive every consumer links, lua.wasm included: onelua.o, the EH
+# unit, the OS layer and every musl member (an MRI script, since ar
+# cannot nest archives). The crt stays a separate object, named on the
+# link line as crt objects are; --export=luaw_init pulls onelua.o in
+# (the export every host calls first), the rest follows by reference.
+# lua.wasm is this archive linked with nothing added -- the tarball
+# (make sdk) ships the same file, so a consumer's Lua is the artifact's
+# own bytes.
+LUA_WASM_A= $(MUSL_BUILD)/liblua-wasm.a
+$(LUA_WASM_A): $(MUSL_BUILD)/onelua.o $(MUSL_BUILD)/luaw-eh.o $(MUSL_RT) $(MUSL_A)
+	rm -f $@
+	printf 'create $@\naddmod $(MUSL_BUILD)/onelua.o\naddmod $(MUSL_BUILD)/luaw-eh.o\naddmod $(MUSL_BUILD)/luaw-sys.o\naddmod $(MUSL_BUILD)/luaw-fs.o\naddlib $(MUSL_A)\nsave\nend\n' | $(MUSL_AR) -M
+
+$(MUSL_BUILD)/lua.linked.wasm: $(LUA_WASM_A) $(MUSL_BUILD)/luaw-crt.o | musl-rtlib
+	$(WASM_CLANGXX) $(MUSL_LDFLAGS) -Wl,--strip-all $(MUSL_BUILD)/luaw-crt.o -Wl,--export=luaw_init -L$(MUSL_BUILD) -llua-wasm $(MUSL_RTLIB) -o $@
 
 $(WASM_O): $(MUSL_BUILD)/lua.linked.wasm
 	@if [ -n "$(WASM_OPT)" ]; then \
 	  echo "$(WASM_OPT) $(WASM_OPT_FLAGS) $< -o $@"; \
 	  $(WASM_OPT) $(WASM_OPT_FLAGS) $< -o $@; \
 	else cp $< $@; fi
-	@node -e 'const z=require("zlib"),b=require("fs").readFileSync(process.argv[1]);console.log(process.argv[1]+": "+b.length+" bytes ("+z.brotliCompressSync(b).length+" brotli, "+z.gzipSync(b,{level:9}).length+" gzip)")' $@
+	@$(NODE) -e 'const z=require("zlib"),b=require("fs").readFileSync(process.argv[1]);console.log(process.argv[1]+": "+b.length+" bytes ("+z.brotliCompressSync(b).length+" brotli, "+z.gzipSync(b,{level:9}).length+" gzip)")' $@
 
 wasm: $(WASM_O)
 
@@ -115,8 +135,69 @@ wasm: $(WASM_O)
 # Witness: scripts/lua-js-witness.mjs (three engines, and from file://).
 LUA_JS= lua.js
 $(LUA_JS): $(WASM_O) scripts/host.mjs scripts/loader.js scripts/build-lua-js.mjs
-	node scripts/build-lua-js.mjs $@ $(WASM_O)
+	$(NODE) scripts/build-lua-js.mjs $@ $(WASM_O)
 lua-js: $(LUA_JS)
+
+# ── The tarball: the compiled interpreter and its C stack for linking ──────
+# The embedding principle (design record, 2026-10-14): a consumer with
+# compiled code of its own (C, C++, Rust on wasm32) links Lua into the
+# same module as that code, so it takes the pieces lua.wasm is linked
+# from, before the link: lib/liblua-wasm.a (the archive lua.wasm itself is
+# linked from, above), lib/crt-reactor.o (named explicitly on
+# the link line, as crt objects are), include/ (Lua's five headers and
+# the libc's, laid out as a sysroot), src/ (the sources, a fallback for
+# unusual defines), examples/embed (below), LINK.md (doc/sdk/LINK.md,
+# the consumer's notes), PIN. lua.wasm is this archive linked with
+# nothing added, which sdk-check proves by relinking it from the
+# unpacked tarball alone. A consumer with a real C++ runtime compiles
+# port/luaw-eh.cpp itself with -DLUAW_EXTERNAL_EH (src/ carries it).
+# Version: the nearest tag (SDK_VERSION= overrides, as the release does).
+SDK_VERSION?= $(shell git describe --tags --always 2>/dev/null || echo untagged)
+SDK= lua-wasm-sdk-$(SDK_VERSION)
+SDK_DIR= build/sdk/$(SDK)
+sdk: $(LUA_WASM_A) $(MUSL_BUILD)/luaw-crt.o doc/sdk/LINK.md
+	rm -rf build/sdk && mkdir -p $(SDK_DIR)/lib $(SDK_DIR)/include/bits $(SDK_DIR)/src/port
+	cp $(LUA_WASM_A) $(SDK_DIR)/lib/liblua-wasm.a
+	cp $(MUSL_BUILD)/luaw-crt.o $(SDK_DIR)/lib/crt-reactor.o
+	cp -r $(MUSL_DIR)/include/. $(SDK_DIR)/include/
+	rm -f $(SDK_DIR)/include/alltypes.h.in
+	cp $(MUSL_DIR)/arch/generic/bits/*.h $(SDK_DIR)/include/bits/ && cp $(MUSL_ARCH)/bits/*.h $(SDK_DIR)/include/bits/ && cp $(MUSL_BUILD)/include/bits/*.h $(SDK_DIR)/include/bits/
+	cp src/lua.h src/lauxlib.h src/lualib.h src/luaconf.h src/lua.hpp $(SDK_DIR)/include/
+	cp src/*.c src/*.h $(SDK_DIR)/src/ && cp port/luaw-eh.cpp port/luaw-crt.c port/luaw-sys.c port/luaw-fs.c $(SDK_DIR)/src/port/
+	printf 'lua.wasm %s\ncommit %s\nhttps://github.com/andy-emerson/lua.wasm\nlua 5.4.8 verbatim; musl 1.2.6 verbatim\n' "$(SDK_VERSION)" "$$(git rev-parse HEAD 2>/dev/null || echo unknown)" > $(SDK_DIR)/PIN
+	mkdir -p $(SDK_DIR)/examples && cp -r examples/embed $(SDK_DIR)/examples/embed
+	cp doc/sdk/LINK.md $(SDK_DIR)/LINK.md
+	tar czf $(SDK).tar.gz -C build/sdk $(SDK)
+	@ls -l $(SDK).tar.gz | awk '{print $$9": "$$5" bytes"}'
+
+# the proof that the tarball is the artifact's own bytes: the tarball
+# just built is unpacked, lua.wasm is relinked from its lib/ alone with
+# the Makefile's own link flags, optimized the same way, and must be
+# byte-identical to lua.wasm
+SDK_CHECK= build/sdk/check/$(SDK)
+sdk-check: sdk $(WASM_O) | musl-rtlib
+	rm -rf build/sdk/check && mkdir -p build/sdk/check && tar xzf $(SDK).tar.gz -C build/sdk/check
+	$(WASM_CLANGXX) $(MUSL_LDFLAGS) -Wl,--strip-all $(SDK_CHECK)/lib/crt-reactor.o -Wl,--export=luaw_init -L$(SDK_CHECK)/lib -llua-wasm $(MUSL_RTLIB) -o build/sdk/check/relinked.linked.wasm
+	@if [ -n "$(WASM_OPT)" ]; then $(WASM_OPT) $(WASM_OPT_FLAGS) build/sdk/check/relinked.linked.wasm -o build/sdk/check/relinked.wasm; else cp build/sdk/check/relinked.linked.wasm build/sdk/check/relinked.wasm; fi
+	cmp build/sdk/check/relinked.wasm $(WASM_O) && echo "SDK CHECK PASS: lua.wasm relinked from the unpacked tarball is byte-identical"
+
+# ── The embedding example: examples/embed ─────────────────────────────────
+# What a consumer with compiled code of its own does with the tarball:
+# app.c (stock Lua API only) compiled and linked by plain clang against
+# the unpacked tarball as a sysroot (build.sh), run by a host of four
+# imports (host.mjs). The check unpacks the tarball make sdk just built,
+# so what is witnessed is the shipped form, and compares the program's
+# output and exit status with expect.txt. EMBED_CC is the consumer's
+# compiler (any clang; clang 20 is not required for a consumer's own C);
+# EMBED_RT names its wasm32 builtins archive when build.sh cannot find
+# one in the compiler's resource directory (zig cc has none).
+EMBED_CC?= clang-20
+EMBED_RT?=
+embed-check: sdk
+	rm -rf build/embed && mkdir -p build/embed && tar xzf $(SDK).tar.gz -C build/embed
+	CC="$(EMBED_CC)" RT="$(EMBED_RT)" sh examples/embed/build.sh build/embed/$(SDK) build/embed/app.wasm
+	$(NODE) examples/embed/host.mjs build/embed/app.wasm > build/embed/out.txt 2>&1; echo "exit $$?" >> build/embed/out.txt
+	cmp build/embed/out.txt examples/embed/expect.txt && echo "EMBED CHECK PASS: the tarball's example builds with $(EMBED_CC), runs, and prints what expect.txt says"
 
 # ── The benchmark (issue #54) ───────────────────────────────────────────────
 # lua.js against Wasmoon and fengari-web, pinned, in the same page under a
@@ -128,7 +209,7 @@ BENCH_ENGINE?= chromium
 BENCH_PEERS= wasmoon@1.16.0 fengari-web@0.1.4
 bench: $(LUA_JS)
 	@[ -d node_modules/wasmoon ] && [ -d node_modules/fengari-web ] || npm i --no-save $(BENCH_PEERS)
-	node scripts/bench-witness.mjs $(LUA_JS) $(WASM_O) --engine $(BENCH_ENGINE)
+	$(NODE) scripts/bench-witness.mjs $(LUA_JS) $(WASM_O) --engine $(BENCH_ENGINE)
 
 # ── The oracle and the differential witness ────────────────────────────────
 # Stock Lua 5.4.8 built natively for x86_64-linux-musl, statically, with
@@ -146,4 +227,4 @@ differential: $(WASM_O) $(NATIVE_MUSL_LUA)
 	sh scripts/differential.sh $(WASM_O) $(NATIVE_MUSL_LUA)
 
 # list targets that do not create files (but not all makes understand .PHONY)
-.PHONY: $(PLATS) clean wasm lua-js bench lua-debug oracle differential
+.PHONY: $(PLATS) clean wasm lua-js sdk sdk-check embed-check bench lua-debug oracle differential

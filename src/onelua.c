@@ -6,9 +6,10 @@
 ** pattern that upstream Lua itself ships.
 **
 ** Build modes (default is the full `lua` interpreter):
-**   -DMAKE_LIB   just the core + libraries (no lua.c). No build in this
-**                repository uses it; it is the shape the link-Lua-in
-**                reopen contract names (doc/history/wasi-sunset-2026-10-13.md)
+**   -DMAKE_LIB   just the core + libraries (no lua.c): upstream's mode,
+**                dormant here. A consumer linking Lua in takes the
+**                artifact's own object from the tarball instead (the
+**                embedding principle, doc/history/browser-native-2026-10-13.md)
 **   -DMAKE_LUA   the standalone interpreter (default); the wasm artifact
 **                adds -DMAKE_REACTOR for the luaw_* embedding interface
 */
@@ -79,8 +80,8 @@ extern int luaw_try (void *L, void (*f)(void *, void *), void *ud);
 ** libc and the OS layer in port/ must agree on symbol names. No build
 ** here compiles this file as C++ any more (the wasm build did until the
 ** optimization round moved the throw and catch into port/luaw-eh.cpp);
-** this and the LUAI_DDEC branch above are dormant, kept with -DMAKE_LIB
-** as the link-Lua-in reopen contract. */
+** this and the LUAI_DDEC branch above are dormant, upstream's pattern
+** kept verbatim. */
 #if defined(__cplusplus)
 extern "C" {
 #endif
@@ -151,9 +152,18 @@ static void luaw_ltests_openlibs (lua_State *L) {
 #define luaL_openlibs	luaw_ltests_openlibs
 #endif
 
-/* interpreter */
+/* interpreter. On wasm, lua.c's main is renamed: the reactor reaches it
+   through luaw_main, and a consumer linking this object into its own
+   module (the tarball, doc/wasm.md) must be free to define main itself.
+   Native builds keep the name: lua-debug is a program. */
 #ifdef MAKE_LUA
+#if defined(__wasm__)
+#define main luaw_lua_main
+#endif
 #include "lua.c"
+#if defined(__wasm__)
+#undef main
+#endif
 #endif
 
 /*
@@ -190,8 +200,8 @@ static void luaw_ltests_openlibs (lua_State *L) {
 ** js.call(name, ...) is the one primitive; the Lua-side library (the
 ** source below: tokens with await and when, js.poll, the direct-call
 ** form js.name(...)) sits on it. luaw_openlibs registers the library on
-** any state: luaw_init calls it, and a link-in consumer (-DMAKE_LIB)
-** calls it on its own state after luaL_openlibs. Names beginning with
+** any state: luaw_init calls it, and a consumer linking the tarball's
+** archive calls it on its own state after luaL_openlibs (LINK.md). Names beginning with
 ** NUL are the bridge's own protocol ("\0poll"), answered by the host
 ** itself, not by its table.
 **
@@ -860,7 +870,7 @@ LUAW_API const char *luaw_message (size_t *len) {
 LUAW_API int luaw_main (int argc, char **argv) {
   LUAW_ENTRY_GUARD(1);
   luaw_clock_start();
-  return main(argc, argv);
+  return luaw_lua_main(argc, argv);
 }
 #endif
 
