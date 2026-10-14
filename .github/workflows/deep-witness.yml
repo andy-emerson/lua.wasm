@@ -44,7 +44,7 @@ jobs:
         # compiler-rt stays out of the link (it carries a libm; port/musl.mk).
         run: |
           python3 -m pip install 'ziglang==0.15.1' && npm i --no-save binaryen@132.0.0
-          sudo apt-get install -y libclang-rt-18-dev-wasm32
+          sudo apt-get update && sudo apt-get install -y libclang-rt-18-dev-wasm32
       - name: build with the README's zig recipe
         run: >
           make wasm

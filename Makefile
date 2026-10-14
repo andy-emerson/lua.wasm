@@ -39,6 +39,7 @@ $(PLATS) clean:
 # Run it:
 #   node scripts/lua.mjs lua.wasm -- script.lua
 WASM_CLANGXX= clang++-20
+NODE?= node
 WASM_STACK= 8388608
 WASM_O= lua.wasm
 WASM_EXTRA=
@@ -122,7 +123,7 @@ $(WASM_O): $(MUSL_BUILD)/lua.linked.wasm
 	  echo "$(WASM_OPT) $(WASM_OPT_FLAGS) $< -o $@"; \
 	  $(WASM_OPT) $(WASM_OPT_FLAGS) $< -o $@; \
 	else cp $< $@; fi
-	@node -e 'const z=require("zlib"),b=require("fs").readFileSync(process.argv[1]);console.log(process.argv[1]+": "+b.length+" bytes ("+z.brotliCompressSync(b).length+" brotli, "+z.gzipSync(b,{level:9}).length+" gzip)")' $@
+	@$(NODE) -e 'const z=require("zlib"),b=require("fs").readFileSync(process.argv[1]);console.log(process.argv[1]+": "+b.length+" bytes ("+z.brotliCompressSync(b).length+" brotli, "+z.gzipSync(b,{level:9}).length+" gzip)")' $@
 
 wasm: $(WASM_O)
 
@@ -134,7 +135,7 @@ wasm: $(WASM_O)
 # Witness: scripts/lua-js-witness.mjs (three engines, and from file://).
 LUA_JS= lua.js
 $(LUA_JS): $(WASM_O) scripts/host.mjs scripts/loader.js scripts/build-lua-js.mjs
-	node scripts/build-lua-js.mjs $@ $(WASM_O)
+	$(NODE) scripts/build-lua-js.mjs $@ $(WASM_O)
 lua-js: $(LUA_JS)
 
 # ── The tarball: the compiled interpreter and its C stack for linking ──────
@@ -145,37 +146,40 @@ lua-js: $(LUA_JS)
 # linked from, above), lib/crt-reactor.o (named explicitly on
 # the link line, as crt objects are), include/ (Lua's four headers and
 # the libc's, laid out as a sysroot), src/ (the sources, a fallback for
-# unusual defines), examples/embed (below), PIN. lua.wasm is this archive linked with nothing
-# added, which sdk-check proves by relinking it from the tarball alone.
-# A consumer with a real C++ runtime compiles port/luaw-eh.cpp itself
-# with -DLUAW_EXTERNAL_EH (src/ carries it). LINK.md joins in the doc
-# pass. Version: the nearest tag (SDK_VERSION= overrides, as the
-# release does).
+# unusual defines), examples/embed (below), LINK.md (doc/sdk/LINK.md,
+# the consumer's notes), PIN. lua.wasm is this archive linked with
+# nothing added, which sdk-check proves by relinking it from the
+# unpacked tarball alone. A consumer with a real C++ runtime compiles
+# port/luaw-eh.cpp itself with -DLUAW_EXTERNAL_EH (src/ carries it).
+# Version: the nearest tag (SDK_VERSION= overrides, as the release does).
 SDK_VERSION?= $(shell git describe --tags --always 2>/dev/null || echo untagged)
 SDK= lua-wasm-sdk-$(SDK_VERSION)
 SDK_DIR= build/sdk/$(SDK)
-sdk: $(LUA_WASM_A) $(MUSL_BUILD)/luaw-crt.o
+sdk: $(LUA_WASM_A) $(MUSL_BUILD)/luaw-crt.o doc/sdk/LINK.md
 	rm -rf build/sdk && mkdir -p $(SDK_DIR)/lib $(SDK_DIR)/include/bits $(SDK_DIR)/src/port
 	cp $(LUA_WASM_A) $(SDK_DIR)/lib/liblua-wasm.a
 	cp $(MUSL_BUILD)/luaw-crt.o $(SDK_DIR)/lib/crt-reactor.o
 	cp -r $(MUSL_DIR)/include/. $(SDK_DIR)/include/
+	rm -f $(SDK_DIR)/include/alltypes.h.in
 	cp $(MUSL_DIR)/arch/generic/bits/*.h $(SDK_DIR)/include/bits/ && cp $(MUSL_ARCH)/bits/*.h $(SDK_DIR)/include/bits/ && cp $(MUSL_BUILD)/include/bits/*.h $(SDK_DIR)/include/bits/
-	cp $(MUSL_ARCH)/*.h $(SDK_DIR)/include/
 	cp src/lua.h src/lauxlib.h src/lualib.h src/luaconf.h src/lua.hpp $(SDK_DIR)/include/
 	cp src/*.c src/*.h $(SDK_DIR)/src/ && cp port/luaw-eh.cpp port/luaw-crt.c port/luaw-sys.c port/luaw-fs.c $(SDK_DIR)/src/port/
 	printf 'lua.wasm %s\ncommit %s\nlua 5.4.8 verbatim; musl 1.2.6 verbatim\n' "$(SDK_VERSION)" "$$(git rev-parse HEAD 2>/dev/null || echo unknown)" > $(SDK_DIR)/PIN
 	mkdir -p $(SDK_DIR)/examples && cp -r examples/embed $(SDK_DIR)/examples/embed
-	[ -f doc/sdk/LINK.md ] && cp doc/sdk/LINK.md $(SDK_DIR)/LINK.md || true
+	cp doc/sdk/LINK.md $(SDK_DIR)/LINK.md
 	tar czf $(SDK).tar.gz -C build/sdk $(SDK)
 	@ls -l $(SDK).tar.gz | awk '{print $$9": "$$5" bytes"}'
 
-# the proof that the tarball is the artifact's own bytes: lua.wasm relinked
-# from the tarball's lib/ alone, with the link line LINK.md gives a
-# consumer, then optimized the same way, is byte-identical to lua.wasm
+# the proof that the tarball is the artifact's own bytes: the tarball
+# just built is unpacked, lua.wasm is relinked from its lib/ alone with
+# the link line LINK.md gives a consumer, optimized the same way, and
+# must be byte-identical to lua.wasm
+SDK_CHECK= build/sdk/check/$(SDK)
 sdk-check: sdk $(WASM_O) | musl-rtlib
-	$(WASM_CLANGXX) $(MUSL_LDFLAGS) -Wl,--strip-all $(SDK_DIR)/lib/crt-reactor.o -Wl,--export=luaw_init -L$(SDK_DIR)/lib -llua-wasm $(MUSL_RTLIB) -o build/sdk/relinked.linked.wasm
-	@if [ -n "$(WASM_OPT)" ]; then $(WASM_OPT) $(WASM_OPT_FLAGS) build/sdk/relinked.linked.wasm -o build/sdk/relinked.wasm; else cp build/sdk/relinked.linked.wasm build/sdk/relinked.wasm; fi
-	cmp build/sdk/relinked.wasm $(WASM_O) && echo "SDK CHECK PASS: lua.wasm relinked from the tarball is byte-identical"
+	rm -rf build/sdk/check && mkdir -p build/sdk/check && tar xzf $(SDK).tar.gz -C build/sdk/check
+	$(WASM_CLANGXX) $(MUSL_LDFLAGS) -Wl,--strip-all $(SDK_CHECK)/lib/crt-reactor.o -Wl,--export=luaw_init -L$(SDK_CHECK)/lib -llua-wasm $(MUSL_RTLIB) -o build/sdk/check/relinked.linked.wasm
+	@if [ -n "$(WASM_OPT)" ]; then $(WASM_OPT) $(WASM_OPT_FLAGS) build/sdk/check/relinked.linked.wasm -o build/sdk/check/relinked.wasm; else cp build/sdk/check/relinked.linked.wasm build/sdk/check/relinked.wasm; fi
+	cmp build/sdk/check/relinked.wasm $(WASM_O) && echo "SDK CHECK PASS: lua.wasm relinked from the unpacked tarball is byte-identical"
 
 # ── The embedding example: examples/embed ─────────────────────────────────
 # What a consumer with compiled code of its own does with the tarball:
@@ -184,9 +188,11 @@ sdk-check: sdk $(WASM_O) | musl-rtlib
 # imports (host.mjs). The check unpacks the tarball make sdk just built,
 # so what is witnessed is the shipped form, and compares the program's
 # output and exit status with expect.txt. EMBED_CC is the consumer's
-# compiler (any clang; clang 20 is not required for a consumer's own C).
+# compiler (any clang; clang 20 is not required for a consumer's own C);
+# EMBED_RT names its wasm32 builtins archive when build.sh cannot find
+# one in the compiler's resource directory (zig cc has none).
 EMBED_CC?= clang-20
-NODE?= node
+EMBED_RT?=
 embed-check: sdk
 	rm -rf build/embed && mkdir -p build/embed && tar xzf $(SDK).tar.gz -C build/embed
 	CC="$(EMBED_CC)" RT="$(EMBED_RT)" sh examples/embed/build.sh build/embed/$(SDK) build/embed/app.wasm
@@ -203,7 +209,7 @@ BENCH_ENGINE?= chromium
 BENCH_PEERS= wasmoon@1.16.0 fengari-web@0.1.4
 bench: $(LUA_JS)
 	@[ -d node_modules/wasmoon ] && [ -d node_modules/fengari-web ] || npm i --no-save $(BENCH_PEERS)
-	node scripts/bench-witness.mjs $(LUA_JS) $(WASM_O) --engine $(BENCH_ENGINE)
+	$(NODE) scripts/bench-witness.mjs $(LUA_JS) $(WASM_O) --engine $(BENCH_ENGINE)
 
 # ── The oracle and the differential witness ────────────────────────────────
 # Stock Lua 5.4.8 built natively for x86_64-linux-musl, statically, with

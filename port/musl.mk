@@ -18,11 +18,12 @@
 # nothing in the artifact. thread/__unmapself.c is inline asm for a
 # thread-exit path a single-threaded build never takes.
 #
-# Toolchain: a C compiler for wasm32 in WASM_CC (clang 20+; `python3 -m
-# ziglang cc` works and is what CI uses, see the Makefile header) and its
-# archiver in MUSL_AR. The target triple is wasm32-freestanding, the one
-# spelling both clang and zig accept. Linking through the same driver
-# with -nostdlib adds compiler-rt's builtins; nothing else is linked.
+# Toolchain: a C compiler for wasm32 in WASM_CC (clang-20 by default;
+# `python3 -m ziglang cc` is the alternative, see the Makefile header)
+# and its archiver in MUSL_AR. The target triple is wasm32-freestanding,
+# the one spelling both clang and zig accept. The link names LLVM's
+# compiler-rt builtins archive itself (MUSL_RTLIB, below): -nostdlib
+# links no runtime, and zig's own is kept out.
 
 MUSL_DIR=   third_party/musl
 MUSL_BUILD= build/musl
@@ -87,12 +88,13 @@ MUSL_RTLIB?= $(firstword $(wildcard $(MUSL_RESDIR)/lib/libclang_rt.builtins-wasm
 ifneq (,$(findstring zig,$(WASM_CC) $(WASM_CLANGXX)))
 MUSL_LDFLAGS+= -rtlib=none
 endif
-# every link runs this first: a zig link without the builtins named
-# would fail on __multf3, with the reason hidden in the symbol
+# every link runs this first: a link without the builtins archive would
+# fail on __multf3, with the reason hidden in the symbol
 musl-rtlib:
-	@if [ -z "$(MUSL_RTLIB)" ] && echo "$(WASM_CC) $(WASM_CLANGXX)" | grep -q zig; then \
-	  echo "MUSL_RTLIB is empty: under zig name the LLVM builtins archive, e.g."; \
-	  echo "  MUSL_RTLIB=/usr/lib/llvm-18/lib/clang/18/lib/wasi/libclang_rt.builtins-wasm32.a (libclang-rt-18-dev-wasm32)"; \
+	@if [ -z "$(MUSL_RTLIB)" ]; then \
+	  echo "MUSL_RTLIB is empty: no wasm32 compiler-rt builtins archive under $(WASM_CLANGXX)'s resource directory."; \
+	  echo "  plain clang: install the driver's libclang-rt-N-dev-wasm32 package;"; \
+	  echo "  zig: name LLVM's archive, e.g. MUSL_RTLIB=/usr/lib/llvm-18/lib/clang/18/lib/wasi/libclang_rt.builtins-wasm32.a (libclang-rt-18-dev-wasm32)"; \
 	  exit 1; fi
 
 $(MUSL_BUILD)/include/bits/alltypes.h: $(MUSL_ARCH)/bits/alltypes.h.in $(MUSL_DIR)/include/alltypes.h.in $(MUSL_DIR)/tools/mkalltypes.sed
@@ -143,7 +145,7 @@ $(MUSL_BUILD)/libc-smoke.wasm: port/test/libc-smoke.c $(MUSL_RT) $(MUSL_A) | mus
 	$(WASM_CC) $(MUSL_LDFLAGS) $(MUSL_RT) $(MUSL_BUILD)/libc-smoke.o $(MUSL_A) $(MUSL_RTLIB) -o $@
 
 libc-smoke: $(MUSL_BUILD)/libc-smoke.wasm
-	node scripts/libc-smoke.mjs $<
+	$(NODE) scripts/libc-smoke.mjs $<
 
 # The allocator and the OS layer's memory under stress (port/test/
 # alloc-stress.c): no corruption across 300k random operations, and no
@@ -153,6 +155,6 @@ $(MUSL_BUILD)/alloc-stress.wasm: port/test/alloc-stress.c $(MUSL_RT) $(MUSL_A) |
 	$(WASM_CC) $(MUSL_LDFLAGS) $(MUSL_RT) $(MUSL_BUILD)/alloc-stress.o $(MUSL_A) $(MUSL_RTLIB) -o $@
 
 libc-stress: $(MUSL_BUILD)/alloc-stress.wasm
-	node scripts/libc-stress.mjs $<
+	$(NODE) scripts/libc-stress.mjs $<
 
 .PHONY: musl-libc musl-rtlib libc-smoke libc-stress

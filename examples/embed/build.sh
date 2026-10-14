@@ -21,8 +21,10 @@ RTFLAG=
 case "$CC" in *zig*) RTFLAG=-rtlib=none ;; esac
 if [ -z "${RT:-}" ]; then
   RES=$($CC -print-resource-dir)
-  RT=$(ls "$RES"/lib/libclang_rt.builtins-wasm32.a "$RES"/lib/wasi/libclang_rt.builtins-wasm32.a \
-          "$RES"/lib/wasm32-*/libclang_rt.builtins.a "$RES"/lib/wasm32-*/libclang_rt.builtins-wasm32.a 2>/dev/null | head -1)
+  for p in "$RES"/lib/libclang_rt.builtins-wasm32.a "$RES"/lib/wasi/libclang_rt.builtins-wasm32.a \
+           "$RES"/lib/wasm32-*/libclang_rt.builtins.a "$RES"/lib/wasm32-*/libclang_rt.builtins-wasm32.a; do
+    if [ -f "$p" ]; then RT=$p; break; fi
+  done
 fi
 [ -n "$RT" ] || { echo "build.sh: no wasm32 compiler-rt builtins under $($CC -print-resource-dir); install libclang-rt-N-dev-wasm32 or name the archive in RT" >&2; exit 1; }
 
