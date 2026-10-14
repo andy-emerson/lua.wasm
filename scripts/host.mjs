@@ -19,7 +19,12 @@
 // tables (a Lua sequence <-> an Array; other keys <-> a plain object with
 // string keys, or a Map when a key is not a string). Functions, objects
 // with identity and cycles do not cross. A function that throws is
-// returned to Lua as an error with the exception's message.
+// returned to Lua as an error with the exception's message. A function
+// that returns a promise hands Lua a token (an integer this host maps
+// to the promise); when it settles, the outcome joins a queue that the
+// module's js.poll drains through the reserved name "\0poll" -- the one
+// name this side answers itself. Nothing is held by reference across
+// the boundary in either direction.
 //
 // Options: stdout(text), stderr(text) receive output as it is produced,
 // decoded as a UTF-8 stream (a multi-byte character split across two
@@ -34,7 +39,10 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 
 // ── the bridge encoding (little-endian; tag byte first) ────────────
-const T = { NIL: 0, FALSE: 1, TRUE: 2, INT: 3, FLOAT: 4, TEXT: 5, BYTES: 6, TABLE: 7, ERROR: 8 };
+const T = { NIL: 0, FALSE: 1, TRUE: 2, INT: 3, FLOAT: 4, TEXT: 5, BYTES: 6, TABLE: 7, ERROR: 8, TOKEN: 9 };
+
+/* a promise the host holds, seen from Lua as js.Token with this id */
+export class LuaToken { constructor(id) { this.id = id; } }
 const MAX_DEPTH = 64, MAX_BYTES = 16 << 20;
 
 class Writer {
@@ -50,6 +58,8 @@ class Writer {
   bytes(b) { this.need(b.length); this.buf.set(b, this.len); this.len += b.length; }
   value(v, depth = 0) {
     if (v === null || v === undefined) this.u8(T.NIL);
+    else if (v instanceof LuaToken) { this.u8(T.TOKEN); this.u32(v.id); }
+    else if (v instanceof Encoded) this.bytes(v.bytes);
     else if (v === false) this.u8(T.FALSE);
     else if (v === true) this.u8(T.TRUE);
     else if (typeof v === 'number') {
@@ -98,6 +108,7 @@ class Reader {
       case T.FLOAT: { this.need(8); const v = this.dv.getFloat64(this.pos, true); this.pos += 8; return v; }
       case T.TEXT: { const n = this.u32(); this.need(n); const s = dec.decode(this.b.subarray(this.pos, this.pos + n)); this.pos += n; return s; }
       case T.BYTES: { const n = this.u32(); this.need(n); const s = this.b.slice(this.pos, this.pos + n); this.pos += n; return s; }
+      case T.TOKEN: return new LuaToken(this.u32());
       case T.TABLE: {
         const n = this.u32(), arr = [];
         for (let i = 0; i < n; i++) arr.push(this.value(depth + 1));
@@ -118,6 +129,11 @@ class Reader {
     }
   }
 }
+
+/* already-encoded bytes, spliced in as one value (a settlement's value
+   is encoded when it settles, so a value that does not cross fails then) */
+class Encoded { constructor(bytes) { this.bytes = bytes; } }
+const encodeError = (e) => { const w = new Writer(); const b = enc.encode(e && e.message !== undefined ? String(e.message) : String(e)); w.u8(T.ERROR); w.u32(b.length); w.bytes(b); return w.result(); };
 
 export function encodeValue(v) { const w = new Writer(); w.value(v); return w.result(); }
 export function decodeValue(bytes) { return new Reader(bytes).value(); }
@@ -140,6 +156,16 @@ export async function createLua(source, opts = {}) {
   let prompt = opts.prompt ?? null;   // () => string | null, asked when stdin is empty
   let memory;
   const fns = Object.create(null);   // lua.js: what Lua may call, by name
+  let nextToken = 1;
+  const settled = [];                // [{id, ok, value: Encoded}] since the last poll
+  const isThenable = (v) => v !== null && typeof v === 'object' && typeof v.then === 'function';
+  const tokenFor = (promise) => {
+    const id = nextToken++;
+    Promise.resolve(promise).then(
+      (v) => { let value; try { value = new Encoded(encodeValue(v)); settled.push({ id, ok: true, value }); } catch (e) { settled.push({ id, ok: false, value: String(e.message ?? e) }); } },
+      (e) => settled.push({ id, ok: false, value: e && e.message !== undefined ? String(e.message) : String(e) }));
+    return new LuaToken(id);
+  };
   const imports = {
     luaw: {
       /* the bridge: decode the arguments, call the registered function,
@@ -147,24 +173,19 @@ export async function createLua(source, opts = {}) {
          0 = result, 1 = error value, 2 = no such name */
       call: (namePtr, nameLen, argsPtr, argsLen, outPtr) => {
         const name = dec.decode(new Uint8Array(memory.buffer, namePtr, nameLen));
-        const fn = fns[name];
-        if (typeof fn !== 'function') return 2;
         let status = 0, out;
-        try {
-          const r = new Reader(new Uint8Array(memory.buffer, argsPtr, argsLen).slice());
-          const n = r.u32(), args = [];
-          for (let i = 0; i < n; i++) args.push(r.value());
-          const result = fn(...args);
-          if (result !== null && typeof result === 'object' && typeof result.then === 'function')
-            throw new TypeError('a promise does not cross yet (tokens arrive with the js library)');
-          out = encodeValue(result);
-        } catch (e) {
-          status = 1;
-          const w = new Writer();
-          const msg = e && e.message !== undefined ? String(e.message) : String(e);
-          const b = enc.encode(msg);
-          w.u8(T.ERROR); w.u32(b.length); w.bytes(b);
-          out = w.result();
+        if (name === '\0poll') {            // the bridge's own protocol: settlements since the last poll
+          try { out = encodeValue(settled.splice(0)); } catch (e) { status = 1; out = encodeError(e); }
+        } else {
+          const fn = fns[name];
+          if (typeof fn !== 'function') return 2;
+          try {
+            const r = new Reader(new Uint8Array(memory.buffer, argsPtr, argsLen).slice());
+            const n = r.u32(), args = [];
+            for (let i = 0; i < n; i++) args.push(r.value());
+            const result = fn(...args);
+            out = encodeValue(isThenable(result) ? tokenFor(result) : result);
+          } catch (e) { status = 1; out = encodeError(e); }
         }
         const p = x.luaw_alloc(out.length);
         new Uint8Array(memory.buffer, p, out.length).set(out);   // the buffer may have moved: fresh view
@@ -218,8 +239,10 @@ export async function createLua(source, opts = {}) {
   const lua = {
     exports: x,
     memory,
-    /* the bridge's table: lua.js.name = fn makes js.call("name", ...) work in Lua */
+    /* the bridge's table: lua.js.name = fn makes js.name(...) work in Lua */
     js: fns,
+    /* settlements not yet delivered (the next run or step delivers them) */
+    pendingSettlements: () => settled.length,
     imports: WebAssembly.Module.imports(module).map(i => `${i.module}.${i.name}`).sort(),
     init: () => x.luaw_init(),
     lastError: () => cstring(x.luaw_last_error()),

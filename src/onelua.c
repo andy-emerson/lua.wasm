@@ -168,6 +168,11 @@ static void luaw_ltests_openlibs (lua_State *L) {
 **   5 text (u32 length, UTF-8 bytes)   6 bytes (u32 length, bytes)
 **   7 table (u32 n, n values = the array part 1..n; u32 m, m key/value
 **     pairs = the rest)   8 error (u32 length, message; host -> module)
+**   9 token (u32 id; host -> module): a promise the host holds. It
+**     arrives as a table {id = n} with the js.Token metatable; the host
+**     delivers its settlement later, as one element of the list the
+**     reserved name "\0poll" returns ({id, ok, value}), and nothing is
+**     ever held by reference on either side.
 **
 ** The argument buffer is u32 count then the values; the result is one
 ** value. Functions, userdata, threads and a nesting deeper than
@@ -182,14 +187,24 @@ static void luaw_ltests_openlibs (lua_State *L) {
 ** knows no such name. A host must not re-enter the VM from inside the
 ** import (no luaw_run, luaw_step...); luaw_alloc and luaw_free are fine.
 **
-** js.call(name, ...) is the one primitive; the Lua-side library (await,
-** when, poll, the direct-call form) sits on it. luaw_openlibs registers
-** the library on any state: luaw_init calls it, and a link-in consumer
-** (-DMAKE_LIB) calls it on its own state after luaL_openlibs.
+** js.call(name, ...) is the one primitive; the Lua-side library (the
+** source below: tokens with await and when, js.poll, the direct-call
+** form js.name(...)) sits on it. luaw_openlibs registers the library on
+** any state: luaw_init calls it, and a link-in consumer (-DMAKE_LIB)
+** calls it on its own state after luaL_openlibs. Names beginning with
+** NUL are the bridge's own protocol ("\0poll"), answered by the host
+** itself, not by its table.
+**
+** Delivery: luaw_step and luaw_run call js.poll before running Lua, so
+** a when continuation runs on the step that receives its settlement
+** and an await resumes on the step after; the module never runs on its
+** own, so nothing is delivered between steps. An error inside a when
+** continuation is reported on stderr and does not stop the program.
 */
 #if defined(__wasm__)
 
 #include <stdint.h>
+#include <stdarg.h>
 
 #define LUAW_MAX_DEPTH 64
 #define LUAW_MAX_BYTES (16u << 20)
@@ -199,8 +214,22 @@ extern int luaw_call (const char *name, size_t nlen, const unsigned char *args, 
 
 static const char luaw_bytes_tag = 0;   /* the key js.bytes() marks with */
 
+/* a bridge error: the message as is, no position (the position would be
+   the js library's own line when called as js.name(...)), as stock's
+   C-searcher errors are */
+static int luaw_bridge_error (lua_State *L, const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  lua_pushvfstring(L, fmt, ap);
+  va_end(ap);
+  return lua_error(L);
+}
+
 enum { LUAW_T_NIL, LUAW_T_FALSE, LUAW_T_TRUE, LUAW_T_INT, LUAW_T_FLOAT,
-       LUAW_T_TEXT, LUAW_T_BYTES, LUAW_T_TABLE, LUAW_T_ERROR };
+       LUAW_T_TEXT, LUAW_T_BYTES, LUAW_T_TABLE, LUAW_T_ERROR, LUAW_T_TOKEN };
+
+static const char *const LUAW_TOKEN_MT = "js.Token";
+static const char *const LUAW_DISPATCH = "luaw.dispatch";
 
 typedef struct { unsigned char *data; size_t len, cap; lua_State *L; } luaw_buf;
 
@@ -210,7 +239,7 @@ static void luaw_enc_raw (luaw_buf *b, const void *p, size_t n) {
     while (ncap < b->len + n) ncap *= 2;
     if (ncap > LUAW_MAX_BYTES) ncap = LUAW_MAX_BYTES;
     if (b->len + n > ncap)
-      luaL_error(b->L, "value does not cross: more than %d bytes", (int)LUAW_MAX_BYTES);
+      luaw_bridge_error(b->L, "value does not cross: more than %d bytes", (int)LUAW_MAX_BYTES);
     {
       unsigned char *nd = realloc(b->data, ncap);
       if (nd == NULL) luaL_error(b->L, "not enough memory");
@@ -232,7 +261,7 @@ static void luaw_enc_table (lua_State *L, int idx, luaw_buf *b, int depth) {
   uint32_t m = 0;
   size_t mpos;
   if (depth > LUAW_MAX_DEPTH)
-    luaL_error(L, "value does not cross: table nesting deeper than %d (a cycle?)", LUAW_MAX_DEPTH);
+    luaw_bridge_error(L, "value does not cross: table nesting deeper than %d (a cycle?)", LUAW_MAX_DEPTH);
   luaL_checkstack(L, 4, "value to the host");
   luaw_enc_u8(b, LUAW_T_TABLE);
   luaw_enc_u32(b, (uint32_t)n);
@@ -298,7 +327,7 @@ static void luaw_enc_value (lua_State *L, int idx, luaw_buf *b, int depth) {
       break;
     }
     default:
-      luaL_error(L, "value does not cross: %s", luaL_typename(L, idx));
+      luaw_bridge_error(L, "value does not cross: %s", luaL_typename(L, idx));
   }
 }
 
@@ -359,6 +388,14 @@ static void luaw_dec_value (lua_State *L, const unsigned char **p, const unsigne
       }
       break;
     }
+    case LUAW_T_TOKEN: {
+      uint32_t id = luaw_dec_u32(L, p, end);
+      lua_createtable(L, 0, 1);
+      lua_pushinteger(L, (lua_Integer)id);
+      lua_setfield(L, -2, "id");
+      luaL_setmetatable(L, LUAW_TOKEN_MT);
+      break;
+    }
     default: luaL_error(L, "malformed value from the host (tag %d)", (int)tag);
   }
 }
@@ -400,12 +437,12 @@ static int luaw_js_call (lua_State *L) {
   free(b.data);
   if (status == 2) {
     if (out[0]) free((void *)(uintptr_t)out[0]);
-    return luaL_error(L, "no such function '%s' (the host registered none by that name)", name);
+    return luaw_bridge_error(L, "no such function '%s' (the host registered none by that name)", name);
   }
   p = (const unsigned char *)(uintptr_t)out[0];
   end = p + out[1];
   if (p == NULL) { lua_pushnil(L); return 1; }
-  if (status != 0 && status != 1) { free((void *)p); return luaL_error(L, "the host returned status %d", status); }
+  if (status != 0 && status != 1) { free((void *)p); return luaw_bridge_error(L, "the host returned status %d", status); }
   /* decode under a protected call so the host's buffer is freed either way */
   lua_pushcfunction(L, luaw_dec_entry);
   lua_pushlightuserdata(L, (void *)p);
@@ -425,6 +462,64 @@ static int luaw_js_bytes (lua_State *L) {
   return 1;
 }
 
+/* the library, in Lua: it receives the table holding the primitives
+   (call, bytes) and the Token metatable, and fills in the rest */
+static const char luaw_js_source[] =
+  "local js, Token = ...\n"
+  "local call = js.call\n"
+  "local pending = {}          -- id -> {done, ok, value, when = {fns}}\n"
+  "local function entry(id)\n"
+  "  local e = pending[id]\n"
+  "  if not e then e = {when = {}} pending[id] = e end\n"
+  "  return e\n"
+  "end\n"
+  "-- settlements since the last poll, delivered: an await sees its entry\n"
+  "-- done, a when continuation runs here, in order of settlement\n"
+  "function js.poll()\n"
+  "  local list = call('\\0poll')\n"
+  "  for _, s in ipairs(list) do\n"
+  "    local e = entry(s.id)\n"
+  "    e.done, e.ok, e.value = true, s.ok, s.value\n"
+  "    local fns = e.when\n"
+  "    e.when = {}\n"
+  "    if #fns > 0 then pending[s.id] = nil end\n"
+  "    for _, f in ipairs(fns) do f(s.ok, s.value) end\n"
+  "  end\n"
+  "  return list\n"
+  "end\n"
+  "Token.__index = Token\n"
+  "Token.__name = 'js.Token'\n"
+  "-- yield to the host until this token settles; returns ok, value\n"
+  "function Token:await()\n"
+  "  local e = entry(self.id)\n"
+  "  while not e.done do\n"
+  "    if not coroutine.isyieldable() then\n"
+  "      error('await: only the resident program can wait for a token (use :when or js.poll)', 2)\n"
+  "    end\n"
+  "    coroutine.yield()\n"
+  "    js.poll()\n"
+  "  end\n"
+  "  pending[self.id] = nil\n"
+  "  return e.ok, e.value\n"
+  "end\n"
+  "-- run f(ok, value) when this token settles (at once if it has)\n"
+  "function Token:when(f)\n"
+  "  local e = entry(self.id)\n"
+  "  if e.done then pending[self.id] = nil f(e.ok, e.value)\n"
+  "  else e.when[#e.when + 1] = f end\n"
+  "  return self\n"
+  "end\n"
+  "function Token:settled() return entry(self.id).done == true end\n"
+  "function Token.__tostring(t) return 'js.Token(' .. t.id .. ')' end\n"
+  "-- js.name(...) is js.call('name', ...): the closure is made once\n"
+  "setmetatable(js, {__index = function(t, name)\n"
+  "  if type(name) ~= 'string' then return nil end\n"
+  "  local f = function(...) return call(name, ...) end\n"
+  "  rawset(t, name, f)\n"
+  "  return f\n"
+  "end})\n"
+  "return js\n";
+
 static int luaw_open_js (lua_State *L) {
   static const luaL_Reg funcs[] = {
     {"call", luaw_js_call},
@@ -432,7 +527,32 @@ static int luaw_open_js (lua_State *L) {
     {NULL, NULL}
   };
   luaL_newlib(L, funcs);
+  luaL_newmetatable(L, LUAW_TOKEN_MT);
+  lua_pushvalue(L, -1);
+  lua_setfield(L, -3, "Token");
+  if (luaL_loadbuffer(L, luaw_js_source, sizeof(luaw_js_source) - 1, "=js") != LUA_OK)
+    return lua_error(L);
+  lua_pushvalue(L, -3);   /* js */
+  lua_pushvalue(L, -3);   /* Token */
+  lua_call(L, 2, 1);      /* returns js */
+  /* keep js.poll where luaw_step and luaw_run can reach it */
+  lua_getfield(L, -1, "poll");
+  lua_setfield(L, LUA_REGISTRYINDEX, LUAW_DISPATCH);
   return 1;
+}
+
+/* deliver settlements before running Lua: js.poll under a protected
+   call; an error in a when continuation is reported, not raised */
+static void luaw_dispatch (lua_State *L) {
+  lua_getfield(L, LUA_REGISTRYINDEX, LUAW_DISPATCH);
+  if (lua_isfunction(L, -1)) {
+    if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+      const char *msg = lua_tostring(L, -1);
+      lua_writestringerror("js: error in a when continuation: %s\n", msg ? msg : "(not a string)");
+      lua_pop(L, 1);
+    }
+  }
+  else lua_pop(L, 1);
 }
 
 /* register the js library on any state: luaw_init calls this; a
@@ -557,6 +677,7 @@ LUAW_API int luaw_run (const char *chunk, size_t len, const char *name) {
   LUAW_ENTRY_GUARD(LUA_ERRRUN);
   if (luaw_L == NULL) return LUA_ERRRUN;
   luaw_clearerror();
+  luaw_dispatch(luaw_L);
   status = luaL_loadbuffer(luaw_L, chunk, len, name ? name : "=(embedded)");
   if (status == LUA_OK)
     status = lua_pcall(luaw_L, 0, 0, 0);
@@ -610,6 +731,7 @@ LUAW_API int luaw_step (const char *msg, size_t len) {
     lua_setfield(luaw_L, LUA_REGISTRYINDEX, LUAW_ERRKEY);
     return LUA_ERRRUN;
   }
+  luaw_dispatch(luaw_L);
   if (msg != NULL) {
     lua_pushlstring(co, msg, len);
     nargs = 1;
