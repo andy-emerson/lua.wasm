@@ -86,7 +86,7 @@ try {
     console.log(`(${engine} ${browser.version()}, detected-engine=${r.detected}, exit ${r.exitCode}, ${r.ms} ms, crossOriginIsolated=${r.coi}, imports=${(r.imports || []).join(',')})`);
     const engineOk = r.detected === engine;
     if (!engineOk) console.log(`ENGINE MISMATCH (runtime): requested ${engine}, page ran on ${r.detected} (ua: ${r.ua})`);
-    const importsOk = (r.imports || []).join(',') === 'luaw.now,luaw.read,luaw.write';
+    const importsOk = (r.imports || []).join(',') === 'luaw.call,luaw.now,luaw.read,luaw.write';
     const pass = engineOk && r.exitCode === 0 && r.transcript.includes(expect) && r.coi === false && importsOk;
     console.log(pass ? `BROWSER WITNESS PASS (${engine})`
                      : `BROWSER WITNESS FAIL (${engine}: ${[!engineOk && 'wrong engine', r.exitCode !== 0 && `exit ${r.exitCode}`, !r.transcript.includes(expect) && `no "${expect}"`, r.coi !== false && 'crossOriginIsolated', !importsOk && 'imports'].filter(Boolean).join(', ')})`);
