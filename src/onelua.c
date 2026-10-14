@@ -151,9 +151,18 @@ static void luaw_ltests_openlibs (lua_State *L) {
 #define luaL_openlibs	luaw_ltests_openlibs
 #endif
 
-/* interpreter */
+/* interpreter. On wasm, lua.c's main is renamed: the reactor reaches it
+   through luaw_main, and a consumer linking this object into its own
+   module (the tarball, doc/wasm.md) must be free to define main itself.
+   Native builds keep the name: lua-debug is a program. */
 #ifdef MAKE_LUA
+#if defined(__wasm__)
+#define main luaw_lua_main
+#endif
 #include "lua.c"
+#if defined(__wasm__)
+#undef main
+#endif
 #endif
 
 /*
@@ -860,7 +869,7 @@ LUAW_API const char *luaw_message (size_t *len) {
 LUAW_API int luaw_main (int argc, char **argv) {
   LUAW_ENTRY_GUARD(1);
   luaw_clock_start();
-  return main(argc, argv);
+  return luaw_lua_main(argc, argv);
 }
 #endif
 
