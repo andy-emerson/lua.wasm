@@ -24,7 +24,7 @@ That is a complete page: `lua.js` carries the interpreter, `print` lands on the 
 </script>
 ```
 
-Values cross by copy — numbers, strings, bytes, tables — never by reference; a promise comes back as a token to `await` or watch with `:when(fn)`; an exception is a Lua error. Underneath is `lua.wasm`: [PUC-Rio Lua](https://www.lua.org) 5.4.8, verbatim, compiled on upstream [musl](https://musl.libc.org) 1.2.6, verbatim, into one WebAssembly module with four small imports — no WASI, no Emscripten, no special headers — for anyone embedding the real Lua in a web app, in Node, or in any host that can supply four functions.
+Values cross by copy — numbers, strings, bytes, tables — never by reference; a promise comes back as a token to `await` or watch with `:when(fn)`; an exception is a Lua error. Underneath is `lua.wasm`: [PUC-Rio Lua](https://www.lua.org) 5.4.8, verbatim, compiled on upstream [musl](https://musl.libc.org) 1.2.6, verbatim, into one WebAssembly module with four small imports — no WASI, no Emscripten, no special headers — for anyone embedding the real Lua in a web app or in Node: the two places it is witnessed.
 
 ## Why you'd want it
 

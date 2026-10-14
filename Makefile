@@ -17,9 +17,9 @@ $(PLATS) clean:
 # catch(...)-only micro-runtime; no libc++abi), on upstream musl (third_party/musl, verbatim; built for wasm32 by
 # port/musl.mk) with the OS under it in port/ (luaw-sys.c, luaw-fs.c).
 # The module imports exactly four functions -- luaw.write, luaw.now,
-# luaw.read, luaw.call -- and runs in any current browser from a plain page, in
-# Node >= 24.15, or in any wasm runtime with the standard exception-
-# handling encoding. Design: doc/history/browser-native-2026-10-13.md;
+# luaw.read, luaw.call -- and runs in any current browser from a plain page and in
+# Node >= 24.15 (the two hosts that are witnessed; the target is Lua on
+# the web, D9). Design: doc/history/browser-native-2026-10-13.md;
 # contract and witnesses: doc/wasm.md.
 #
 # Toolchain: clang 20+ (the standard EH encoding) with its wasm32

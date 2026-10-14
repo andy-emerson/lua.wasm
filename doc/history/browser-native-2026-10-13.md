@@ -165,8 +165,10 @@ Conventions settled alongside, now design:
 | **D9** | Supported runtimes | Standard EH encoding only. Floors (webassembly.org feature data, `exceptionsFinal`): Chrome 137, Firefox 131, Safari 18.4, Node 24.15, Deno 2.3.2, wasmtime 47. CI: current Chromium, Firefox, WebKit; Node ≥ 24.15. | Shipping the legacy encoding too (deprecated; a documented V8 12.x host crash; untestable old Safari). Reopen if real users turn up on older devices. |
 | **D10** | How it lands | Four merges: (1) this record and vendored musl; (2) the new artifact built and tested beside today's; (3) the cutover and removals; (4) `lua.js`. *Merges 1–3 landed 2026-10-13; merge 4 built the same day on D8.* | One or two large merges. |
 
-Deferred, recorded as open work: a non-JavaScript host test (wasmtime,
-issue #53) — "runs in any wasm host" is not claimed until one exists; a
+A non-JavaScript host test (wasmtime, issue #53) was deferred here and
+closed as out of scope on 2026-10-14: the target is Lua on the web, and
+browsers and Node are what is witnessed; reopen if a consumer asks for
+a wasm-runtime host. Also recorded then as open work: a
 reproducible benchmark against Wasmoon in the repo (issue #54; the
 numbers above are session observations; landed as `doc/bench.md`); **D11**,
 the bridge, closed below (2026-10-14) and gating merge 5.
@@ -276,7 +278,7 @@ cannot express.
 the `js` library is Lua source embedded in `src/onelua.c`'s
 host-interface section and registered in `package.preload` at
 `luaw_init`, so `lua.wasm` alone carries the whole Lua-side API and any
-host — lua.js, a Node host, a wasmtime host, an M6 link-in consumer in
+host — lua.js, a Node host, an M6 link-in consumer in
 C — gets it by implementing the one import and feeding settle messages
 through `luaw_step`. The core stays verbatim: this is port code beside
 `luaw_run`. The `require` shim moves the same way for the same reason;
