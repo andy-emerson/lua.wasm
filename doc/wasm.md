@@ -1,9 +1,10 @@
 # Building and running lua.wasm
 
-Operational reference for the `wasm` Makefile target. The README covers
-*what* the artifact is and where it stands; this file covers *how* it is
-made, the host contract in full, how to run it and the official suite,
-the witnesses, and the sharp edges. The design and its decisions are in
+Operational reference for the `wasm` and `sdk` Makefile targets. The
+README covers *what* the artifact is and where it stands; this file
+covers *how* it is made, the host contract in full, how a program with
+compiled code of its own links it in, how to run it and the official
+suite, the witnesses, and the sharp edges. The design and its decisions are in
 [`history/browser-native-2026-10-13.md`](history/browser-native-2026-10-13.md).
 
 ## What it is made of
@@ -46,25 +47,43 @@ the witnesses, and the sharp edges. The design and its decisions are in
 ## Toolchain and build
 
 **clang 20+** — the standard EH encoding (`try_table`/`exnref`,
-`-wasm-use-legacy-eh=false`) needs LLVM 20 — with the wasm32 compiler-rt
-builtins the driver links with `-nostdlib`. No sysroot: the libc is built
-by the same `make`. `zig` 0.15.1 is a self-contained clang 20.1.2 that
-carries the builtins, and is what CI uses:
+`-wasm-use-legacy-eh=false`) needs LLVM 20 — with LLVM's wasm32
+compiler-rt builtins, which the link names explicitly since `-nostdlib`
+adds no runtime (musl's `printf` and `frexpl` reach `__multf3` and its
+kin). No sysroot: the libc is built by the same `make`. The Makefile
+defaults are llvm.org's packages, and CI and the release build with
+them:
 
 ```bash
-pip install ziglang==0.15.1 && npm i binaryen@132.0.0
+sudo apt-get install clang-20 lld-20 libclang-rt-20-dev-wasm32   # from apt.llvm.org
+npm i binaryen@132.0.0
+make wasm MUSL_AR=llvm-ar-20 WASM_OPT=node_modules/binaryen/bin/wasm-opt
+```
+
+`zig` 0.15.1 (`pip install ziglang==0.15.1`) is a self-contained clang
+20.1.2 and builds the same artifact without an apt repository:
+
+```bash
 make wasm WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar" \
           WASM_CLANGXX="python3 -m ziglang c++" \
           WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling" \
+          MUSL_RTLIB=/usr/lib/llvm-18/lib/clang/18/lib/wasi/libclang_rt.builtins-wasm32.a \
           WASM_OPT=node_modules/binaryen/bin/wasm-opt
 ```
 
-(The `-Xclang` pair works around zig's own CPU-feature mapping not
-enabling the wasm EH feature that `-fwasm-exceptions` implies under plain
-clang.) Plain llvm.org clang-20 (`clang-20 lld-20 libclang-rt-20-dev-wasm32`)
-builds with the Makefile defaults — `make wasm MUSL_AR=llvm-ar-20` —
-and `deep-witness.yml` runs that build on demand and on every release tag. zig 0.16 (LLVM 21) miscompiles
-this build: its backend rejects the micro-runtime's tag symbols.
+Two things in that recipe are zig's: the `-Xclang` pair enables the
+wasm EH feature that `-fwasm-exceptions` implies under plain clang, and
+`MUSL_RTLIB` names LLVM's builtins archive (any version's; here
+Ubuntu's `libclang-rt-18-dev-wasm32`) because `port/musl.mk` excludes
+zig's own compiler-rt from the link (`-rtlib=none`): it is one object
+whose weak symbols include a libm, and behind the archive `lua.wasm`
+is linked from, lld keeps that over musl's `exp`, `log` and `sin` —
+caught by the differential corpus (last-bit differences, `-nan` for
+`log(-1)`). A zig link without `MUSL_RTLIB` stops with that message.
+`deep-witness.yml` runs this recipe on demand and on every release
+tag. zig 0.16 (LLVM 21) miscompiles this build: its backend rejects
+the micro-runtime's tag symbols. The native musl oracle for the
+differential is compiled with zig in every arrangement.
 
 The release form is stripped at link (`--strip-all`) and passed through
 Binaryen's `wasm-opt -O3` (`WASM_OPT`; empty skips it). `make wasm` prints
@@ -156,6 +175,33 @@ own: `TZ` as a POSIX rule or a zone name under `/usr/share/zoneinfo`, or
 in memory inside the module and do not persist; `/` is the working
 directory. `io.popen` and `os.execute` fail as on a machine with no shell.
 
+## Embedding it in your own module
+
+A program with compiled code of its own — C, C++ or Rust for wasm32 —
+that calls Lua's C API links Lua into the same module as that code,
+from the tarball `make sdk` builds (`lua-wasm-sdk-<version>.tar.gz`,
+attached to every release): `lib/liblua-wasm.a`, the archive `lua.wasm`
+itself is linked from (`onelua.o`, the EH unit, the OS layer, the
+filesystem, every musl object, by an MRI script since `ar` cannot nest
+archives), `lib/crt-reactor.o`, `include/` (Lua's headers and the
+libc's, as a sysroot's include directory), `src/` (the sources, a
+fallback for unusual defines), `examples/embed/` and `PIN`.
+[`sdk/LINK.md`](sdk/LINK.md), copied into the tarball, is the consumer's
+document: the link line, the builtins archive, the zig note, the host's
+four imports, `luaw_openlibs`, the `luaw_*` exports, and
+`-DLUAW_EXTERNAL_EH` for a consumer with a real C++ runtime.
+
+`lua.wasm` is that archive linked with `crt-reactor.o`,
+`--export=luaw_init` and `--export-dynamic`, nothing else; `make
+sdk-check` relinks it from the tarball's `lib/` alone and compares
+bytes. `make embed-check` unpacks the tarball just built, builds
+`examples/embed/app.c` against it with `EMBED_CC` (default `clang-20`;
+`zig cc` with `EMBED_RT` naming the builtins), runs it under
+`examples/embed/host.mjs` and compares output and exit status with
+`expect.txt`. Both run in CI; the release gates on both and attaches
+the tarball named for the tag. The embedding principle — why an
+archive, why one crt, what was rejected — is in the design record.
+
 ## Running it
 
 In a web page, use `lua.js` ([`lua-js.md`](lua-js.md)): it carries this
@@ -222,7 +268,7 @@ memory counts. Any other difference is a bug in the port.
 
 ## The other witnesses
 
-`scripts/interface-witness.mjs lua.wasm` (77 checks): the import list,
+`scripts/interface-witness.mjs lua.wasm` (105 checks): the import list,
 the export list (exact), every export's behaviour, the exit path, the
 message channel, the filesystem, and the adversarial battery (contained
 stack overflow, mid-flight program death and replacement, a 50k-frame
@@ -238,6 +284,7 @@ largest contains a `try_table`, and that between one and twelve small
 functions do: the interpreter loop carries no landing pads, and Lua's
 catch stays in the protected-call entry points where
 `port/luaw-eh.cpp` put it. CI runs it after the interface witness.
+`make sdk-check` and `make embed-check` (above) witness the tarball.
 
 ## Sharp edges
 

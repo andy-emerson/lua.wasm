@@ -177,6 +177,27 @@ token: the body as bytes, or an error naming the URL and status).
 </script>
 ```
 
+**HTML and JavaScript from Lua** are the page's to grant, the same
+way: register a function that does it. Nothing in `lua.js` evaluates
+code or writes markup on Lua's behalf.
+
+```html
+<script src="lua.js"></script>
+<script>
+  Lua.js.html = (id, markup) => { document.getElementById(id).innerHTML = markup; };
+  Lua.js.eval = (code) => eval(code);        // grants Lua the whole page: only for Lua you wrote
+</script>
+<div id="out"></div>
+<script type="text/lua">
+  js.html("out", "<b>" .. _VERSION .. "</b> at " .. os.date())
+  print(js.eval("document.title"))
+</script>
+```
+
+A page that registers neither has a Lua that can print and nothing
+more, whatever the script's source; one that registers `eval` has
+handed that source the page. Register what the program needs, by name.
+
 Why by copy, in one sentence: a proxy-and-handle bridge spends what
 wasm is good at (isolation, deterministic memory, predictable speed) on
 per-property boundary crossings and garbage-collector entanglement on

@@ -42,33 +42,50 @@ There is no LuaJIT for WebAssembly, and there can't be one as it stands: wasm fo
 lua.wasm is honest about maturity, so you can trust what it claims. Every claim below names its witness; the witnesses run on the release form of the file, so what is tested is what ships.
 
 - **CI-enforced (re-witnessed on every change** by [`witness.yml`](.github/workflows/witness.yml)**):** `lua.js` passes its witness in **Chromium, Firefox and WebKit** (`scripts/lua-js-witness.mjs`: one page per promised behaviour — page output and errors, `src`, lazy `require` and `data-files`, one state per page, `data-stdin`, `os.exit`, per-frame yields, the `Lua` API, local time under three zones against `Intl`, and a page opened as `file://`); the vendored Lua core is verbatim stock 5.4.8, build Makefile and official test suite included (`scripts/verify-stock.sh`) and the vendored musl is the signed 1.2.6 release (`scripts/verify-musl.sh`); the native ltests-instrumented interpreter passes the **full** official suite with the C-API battery active (zero `testC` skips; the `pt_BR` decimal-point checks run where the runner has that locale); `lua.wasm` passes the host-interface witness (`scripts/interface-witness.mjs`: every import and export, the exit path, the message channel, and an adversarial battery — contained stack overflow, mid-flight program death and replacement, a 50k-frame pump, GC under allocation pressure, 200k caught errors leaving linear memory flat), the **full official suite in portable mode** through stock `lua.c` under Node 24 (`scripts/suite-witness.mjs`), the same full suite **in three real browser engines** — Chromium, Firefox and WebKit, from a plain page, driven via Playwright by `scripts/browser-witness.mjs`, which refuses to report a pass unless the page truly ran in the named engine — and the **differential witness** (`scripts/differential.sh`): a corpus of scripts run on the artifact and on native Lua 5.4.8 built for x86_64-linux-musl must produce byte-identical stdout, stderr and exit status. The libc alone passes a smoke witness (printf/strtod exactness, errno, locale, stdin) and a 300,000-operation allocator stress with memory reuse.
-- **Witnessed on demand and on every release tag (**[`deep-witness.yml`](.github/workflows/deep-witness.yml)**):** the same artifact built under plain llvm.org clang-20 with the Makefile defaults passes the interface, suite and differential witnesses — the build is not tied to one compiler driver. Last green: [run 38474596328](https://github.com/andy-emerson/lua.wasm/actions/runs/38474596328) on the v0.3.0 candidate (2026-10-13), the first since the musl cutover; it caught a link that only zig's bundled compiler-rt had been completing.
-- **Stated, not yet witnessed:** the runtime floors. The artifact uses only the standard exception-handling encoding, which [webassembly.org's feature data](https://webassembly.org/features/) puts in Chrome 137, Firefox 131, Safari 18.4 and Node 24.15; CI runs current engines, not the floors. Sizes at this build (zig 0.15.1, binaryen 132, printed by `make`): `lua.wasm` 410,456 bytes (126,690 brotli); `lua.js` with the module inside 584,401 bytes (180,252 brotli) — one file costs about 40% more compressed.
+- **CI-enforced, the tarball:** `make sdk-check` relinks `lua.wasm` from the tarball's `lib/` alone and it is byte-identical, and `make embed-check` builds [`examples/embed`](examples/embed) from the unpacked tarball with plain clang-20, runs it under a twenty-line host, and compares its output with the expected text.
+- **Witnessed on demand and on every release tag (**[`deep-witness.yml`](.github/workflows/deep-witness.yml)**):** the same artifact built under the zig recipe below (zig 0.15.1 as the compiler, LLVM's builtins named for the link) passes the interface, EH, suite and differential witnesses, relinks from the tarball byte-identical, and builds the example with `zig cc` as the consumer — the build is not tied to one compiler driver. The last green run in the previous arrangement (CI on zig, the deep witness on plain clang-20) is [run 38474596328](https://github.com/andy-emerson/lua.wasm/actions/runs/38474596328) (2026-10-13); the first in this one is the next release tag.
+- **Stated, not yet witnessed:** the runtime floors. The artifact uses only the standard exception-handling encoding, which [webassembly.org's feature data](https://webassembly.org/features/) puts in Chrome 137, Firefox 131, Safari 18.4 and Node 24.15; CI runs current engines, not the floors. Sizes at this build (the zig recipe, binaryen 132, printed by `make`; the release's clang-20 build prints its own): `lua.wasm` 410,588 bytes (126,837 brotli); `lua.js` with the module inside 584,577 bytes (180,103 brotli) — one file costs about 40% more compressed.
 - **Known and intended:** `os.setlocale("pt_BR")` returns `"pt_BR"` and keeps the `.` decimal point (musl implements no locale-specific numeric formatting; native Lua on musl does the same), so the official suite runs with a documented `LUA_INIT` prelude that reports the locale unavailable; `io.popen` and `os.execute` fail as on a machine with no shell; files live in memory inside the module and do not persist; `os.clock` is wall time since the VM was created, not CPU time (a browser has none to give — the one knowing divergence from native musl).
 
 - **Measured against the alternatives** ([`doc/bench.md`](doc/bench.md), `make bench`; on demand, each table cites its run): against Wasmoon 1.16.0 in the same page and engine, lua.wasm is 8–31× faster when a frame's worth of data crosses the bridge and 1.1–1.3× on scalar calls out (0.6× in Firefox, whose wasm-to-JavaScript boundary is the costliest); 1.9–2.8× faster on error handling in Chromium and WebKit and 1.15–1.3× on a game-shaped frame in every engine; within 8% either way on allocation and strings; starts level cold (0.90–0.96×) and ahead warm; **behind on pure interpretation** (0.90× in Chromium and WebKit, [#63](https://github.com/andy-emerson/lua.wasm/issues/63)) and **behind on error handling in Firefox** (0.75×, where wasm exceptions are costly, [#64](https://github.com/andy-emerson/lua.wasm/issues/64)). fengari-web 0.1.4 (Lua 5.3 in JavaScript) is 4–15× behind on compute in Chromium and WebKit and 1.4–4× behind in Firefox, where it leads on error handling; it starts fastest everywhere and is fastest at calling into Lua (a direct function call against our resumed program).
 
-Two things it does not do: hand Lua a JavaScript object by reference (`js.document.body.style.color = "red"` is not the model — the page registers what Lua may call, and data crosses by copy; the reopen trigger is in the design record), and run on engines older than the standard encoding.
+## Not in scope
+
+What this project does not do, each with what would reopen it (the reasoning is in the design record, [`doc/history/browser-native-2026-10-13.md`](doc/history/browser-native-2026-10-13.md)):
+
+- **WASI and Emscripten.** No browser provides WASI, and Emscripten is a runtime to ship with the module; the OS Lua needs lives inside the module on four imports. Reopen if a browser ships WASI.
+- **LuaJIT, or any JIT.** wasm forbids runtime code generation and LuaJIT has no wasm backend; every Lua-in-wasm is interpreter-class, and this one is the stock interpreter. Nothing reopens it short of the platform changing.
+- **The command-line world.** No command crt (`_start`, `main`), no wasmtime or other non-JavaScript runtime witness (#53, closed): native Lua serves that world better, and the module would still need a host for its four imports. Reopen if a consumer asks.
+- **Hosts beyond browsers and Node.** Those two are witnessed; a claim for any other is unearned. Reopen when a consumer brings one and a witness for it.
+- **Objects by reference.** `js.document.body.style.color = "red"` is not the model: the page registers what Lua may call, and values cross by copy (D11). Reopen only on a consumer that cannot be served by copy plus the page's own registrations.
+- **Language changes.** Lua is verbatim 5.4.8, bugs included, held by a differential against native Lua on musl. Nothing reopens it.
+- **Threads, SharedArrayBuffer, workers.** A plain page is enough, and the per-frame coroutine model needs none of them. Reopen if a workload needs more than one thread of Lua and the isolation headers it costs.
+- **npm.** Not a second build; deferred until the project's name is settled (#69). Reopens then.
+- **Engines older than the standard exception-handling encoding** (Chrome 137, Firefox 131, Safari 18.4, Node 24.15). The artifact carries that encoding only; a second build for the legacy one would be a second product. Reopen if a consumer needs an engine below those floors.
 
 ## Use it
 
-Put `lua.js` beside your page — downloaded from a [release](https://github.com/andy-emerson/lua.wasm/releases), or built with `make lua-js` — and write Lua in `<script type="text/lua">` tags. [`doc/lua-js.md`](doc/lua-js.md) is the reference: every tag attribute (`src`, `data-files`, `data-stdin`, `data-output`), how `require` fetches modules, animation by `coroutine.yield()`, what `os.exit` does to a page, local time, the bridge (`Lua.js` on the page, `js` in Lua, tokens for promises), and the `Lua` global a page's own JavaScript gets — `Lua.run`, `Lua.start`/`step`, `Lua.files`, `Lua.env`, `Lua.on`.
+One build, three forms, each made from the one before: pick by what your program is.
+
+- **A web page** puts `lua.js` beside it — from a [release](https://github.com/andy-emerson/lua.wasm/releases), or `make lua-js` — and writes Lua in `<script type="text/lua">` tags. [`doc/lua-js.md`](doc/lua-js.md) is the reference: every tag attribute (`src`, `data-files`, `data-stdin`, `data-output`), how `require` fetches modules, animation by `coroutine.yield()`, what `os.exit` does to a page, local time, the bridge (`Lua.js` on the page, `js` in Lua, tokens for promises, HTML from Lua through the page's own registrations), and the `Lua` global a page's own JavaScript gets — `Lua.run`, `Lua.start`/`step`, `Lua.files`, `Lua.env`, `Lua.on`.
+- **A JavaScript application** (in a page or in Node) uses the same `lua.js` and its `Lua` global; the packaging round (#69) adds the DOM guard, `Lua.create()` and types.
+- **A program with compiled code of its own** — C, C++ or Rust for wasm32 — that calls Lua's C API downloads the tarball `lua-wasm-sdk-<version>.tar.gz` from the release and links Lua into its own module: `lib/liblua-wasm.a` (the archive `lua.wasm` itself is linked from), `lib/crt-reactor.o`, the headers as a sysroot, the sources, and an example. [`doc/sdk/LINK.md`](doc/sdk/LINK.md), inside the tarball too, is the link line and the host's four imports.
+
+`lua.wasm` on its own is attached to every release as the module the witnesses ran on; `lua.js` carries it, and the tarball is what it is linked from with nothing added.
 
 ## Build
 
-Toolchain: **clang 20+** (the standard exception-handling encoding needs LLVM 20) with its wasm32 compiler-rt builtins, and Binaryen's `wasm-opt` for the release form. No sysroot: the libc is the vendored musl, built by the same `make`. `zig` 0.15.1 is a self-contained clang 20.1.2 that brings the builtins along, and is what CI uses:
+Toolchain: **clang 20+** (the standard exception-handling encoding needs LLVM 20) with LLVM's wasm32 compiler-rt builtins, and Binaryen's `wasm-opt` for the release form. No sysroot: the libc is the vendored musl, built by the same `make`. The Makefile defaults are llvm.org's packages (`clang-20 lld-20 libclang-rt-20-dev-wasm32`), and that is what CI and the release build with:
 
 ```bash
-pip install ziglang==0.15.1 && npm i binaryen@132.0.0
-make wasm WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar" \
-          WASM_CLANGXX="python3 -m ziglang c++" \
-          WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling" \
-          WASM_OPT=node_modules/binaryen/bin/wasm-opt      # -> lua.wasm
+npm i binaryen@132.0.0
+make wasm MUSL_AR=llvm-ar-20 WASM_OPT=node_modules/binaryen/bin/wasm-opt   # -> lua.wasm
 make lua-js                                                 # -> lua.js, with lua.wasm inside
+make sdk                                                    # -> lua-wasm-sdk-<version>.tar.gz
 node scripts/lua.mjs lua.wasm -- script.lua                 # the lua command line, under Node
 ```
 
-Plain clang-20 builds with the Makefile defaults: `make wasm MUSL_AR=llvm-ar-20`. Running the artifact needs a host with the standard wasm exception handling: a current browser, or **Node ≥ 24.15** (24.0–24.14 only with `--experimental-wasm-exnref`).
+Without an apt repository, `zig` 0.15.1 (`pip install ziglang==0.15.1`) is a self-contained clang 20.1.2 that builds the same artifact; its own compiler-rt stays out of the link because it carries a libm that would replace musl's behind the archive, so the builtins archive is named (the recipe is in the Makefile header; the deep witness runs it). Running the artifact needs a host with the standard wasm exception handling: a current browser, or **Node ≥ 24.15** (24.0–24.14 only with `--experimental-wasm-exnref`). The native musl oracle for the differential is compiled with zig either way.
 
 The native toolchain works as usual: `make guess` builds `src/lua` and `src/luac`.
 
@@ -76,7 +93,7 @@ The native toolchain works as usual: `make guess` builds `src/lua` and `src/luac
 
 ## Embed
 
-The host instantiates `lua.wasm` with four imports in module `luaw` (`write`, `now`, `read`, and `call` for the bridge — [`doc/wasm.md`](doc/wasm.md) has the contract and the value encoding) and drives it through these exports; every call returns, and no call blocks:
+Two ways in. A program with compiled code of its own links the tarball (above; [`doc/sdk/LINK.md`](doc/sdk/LINK.md)) and uses Lua's C API as on any other platform; the host of that module supplies the same four imports described here. A host with no compiled code drives `lua.wasm` from outside: it instantiates it with four imports in module `luaw` (`write`, `now`, `read`, and `call` for the bridge — [`doc/wasm.md`](doc/wasm.md) has the contract and the value encoding) and drives it through these exports; every call returns, and no call blocks:
 
 | export | contract |
 | - | - |
@@ -107,7 +124,8 @@ The durable documents, each with one job and one primary reader:
 | [`doc/wasm.md`](doc/wasm.md) | the reference for `lua.wasm`: what it is made of, the host contract, the witnesses, the sharp edges | the embedder, and the developer of this repository |
 | [`doc/bench.md`](doc/bench.md) | the latest benchmark run against Wasmoon and fengari-web, and what it says | anyone weighing the alternatives; the developer optimizing |
 | [`doc/history/`](doc/history/) | dated design records: decisions with their options, rejected alternatives and reopen conditions; removal records | the developer deciding whether to revisit something |
-| comments in `port/`, `src/onelua.c`, `scripts/` | why each piece is the way it is, at the piece | the developer changing it |
+| [`doc/sdk/LINK.md`](doc/sdk/LINK.md) | the tarball's notes, shipped inside it: what is in it, the link line, the host's four imports | the C, C++ or Rust developer linking Lua into their module |
+| comments in `port/`, `src/onelua.c`, `scripts/`, `examples/` | why each piece is the way it is, at the piece | the developer changing it |
 
 The vendored Lua — `src/` and the official test suite in `tests/` — is verbatim stock 5.4.8, enforced by [`scripts/verify-stock.sh`](scripts/verify-stock.sh); the vendored musl is verbatim 1.2.6, enforced by [`scripts/verify-musl.sh`](scripts/verify-musl.sh) — read their headers before touching `src/`, `tests/` or `third_party/musl/`. Everything of this project's own is in `port/` (the musl arch and the OS under it), `src/onelua.c` (the amalgamation and the `luaw_*` interface) and `scripts/`.
 
@@ -117,6 +135,7 @@ The vendored Lua — `src/` and the official test suite in `tests/` — is verba
 make guess       # native: src/lua, src/luac
 make lua-debug   # the ltests-instrumented witness build
 make wasm ...    # -> lua.wasm (toolchain variables as above; recipe in the Makefile header)
+make sdk ...     # -> lua-wasm-sdk-<version>.tar.gz, the pieces lua.wasm is linked from
 make oracle      # -> build/lua-musl, native Lua 5.4.8 on musl, the differential's reference
 ```
 
@@ -132,17 +151,18 @@ cd tests && : | ../lua-debug all.lua                 # expect 'final OK !!!', ze
 
 # the artifact
 make libc-smoke libc-stress ...                      # the libc alone
-node scripts/interface-witness.mjs lua.wasm          # the host contract, 77 checks
+node scripts/interface-witness.mjs lua.wasm          # the host contract, 105 checks
 node scripts/suite-witness.mjs lua.wasm tests        # full official suite, port mode, Node
 node scripts/browser-witness.mjs lua.wasm --engine chromium   # and firefox, webkit (needs playwright)
 make differential ...                                # byte-identical with native Lua on musl
+make sdk-check embed-check ...                       # the tarball relinks lua.wasm byte-identical; its example builds and runs
 make bench ...                                       # against Wasmoon and fengari (on demand; doc/bench.md)
 
 # the page
 make lua-js && node scripts/lua-js-witness.mjs lua.js lua.wasm --engine chromium   # and firefox, webkit
 ```
 
-CI runs these: [`witness.yml`](.github/workflows/witness.yml) on every PR and push to `main`; [`deep-witness.yml`](.github/workflows/deep-witness.yml) on demand and on every release tag (plain clang-20). A red witness blocks the merge.
+CI runs these: [`witness.yml`](.github/workflows/witness.yml) on every PR and push to `main`; [`deep-witness.yml`](.github/workflows/deep-witness.yml) on demand and on every release tag (the zig recipe). A red witness blocks the merge.
 
 ## Lineage
 

@@ -356,9 +356,25 @@ and types so it serves Node and several VMs). A C, C++ or Rust
 program downloads the tarball from the release, points its toolchain
 at it as a sysroot (`--sysroot`, or Cargo's link search path), names
 one library, supplies the four imports from its host, and pins the
-version; the tarball's notes carry the link line in both forms, the
-four signatures, the reactor shape, the toolchain floor (clang and lld
-20, the standard EH encoding) and the C++ EH line.
+version; the tarball's notes (`doc/sdk/LINK.md`) carry the link line,
+the four signatures, the reactor shape, the builtins archive the link
+needs and the C++ EH line. The consumer's own compiler has no floor
+(the archive was built with clang 20; the consumer's C needs nothing
+newer); the module runs where the standard EH encoding runs.
+
+**The toolchain, settled with it (2026-10-14).** The Makefile defaults
+(llvm.org clang-20, lld-20, LLVM's wasm32 builtins) are what CI and
+the release build with; zig 0.15.1 is the alternative recipe, witnessed
+by the deep witness, and the compiler of the native musl oracle. The
+archive link decided it: zig's bundled compiler-rt is one object whose
+weak symbols include a libm, and behind an archive lld keeps that over
+musl's members — the differential caught `exp`, `log` and `log(-1)`
+differing — so a zig link excludes it (`-rtlib=none`) and names LLVM's
+builtins; a consumer linking the tarball with `zig cc` does the same.
+Rejected: keeping zig as CI's compiler with that exclusion (one more
+zig-only rule in the toolchain the README calls the default), and
+linking `onelua.o` as an object again to dodge it (hides the problem
+for this build only; the tarball would no longer relink byte-identical).
 
 **Rejected, with reopen triggers.**
 
