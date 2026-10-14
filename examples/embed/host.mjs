@@ -1,5 +1,5 @@
 // host.mjs -- the smallest host for a module built from the tarball:
-// the four imports of the host interface (doc/wasm.md), then the
+// the four imports of the host interface (LINK.md), then the
 // consumer's own entry point.
 //
 //   node host.mjs app.wasm      (exit status = app_run's result)

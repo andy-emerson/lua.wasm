@@ -5,13 +5,13 @@
 # do not chain-trigger workflows, so release.yml also dispatches this
 # workflow explicitly; the on.push.tags trigger covers hand-pushed tags.
 #
-#   zig-recipe       -> issue #14, inverted since CI moved to the
-#                       Makefile defaults: the artifact builds and
-#                       passes its witnesses under the README's zig
-#                       recipe (zig 0.15.1 = clang 20.1.2 as the
-#                       compiler, LLVM's builtins archive named for the
-#                       link; port/musl.mk), proving the build is not
-#                       tied to one driver.
+#   zig-recipe       -> issue #14: the artifact builds and passes its
+#                       witnesses under the README's zig recipe (zig
+#                       0.15.1 = clang 20.1.2 as the compiler, LLVM's
+#                       builtins archive named for the link;
+#                       port/musl.mk), the alternative to the Makefile
+#                       defaults CI builds with, proving the build is
+#                       not tied to one driver.
 name: deep-witness
 on:
   push:

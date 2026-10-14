@@ -81,8 +81,8 @@ is linked from, lld keeps that over musl's `exp`, `log` and `sin` —
 caught by the differential corpus (last-bit differences, `-nan` for
 `log(-1)`). A zig link without `MUSL_RTLIB` stops with that message.
 `deep-witness.yml` runs this recipe on demand and on every release
-tag. zig 0.16 (LLVM 21) miscompiles this build: its backend rejects
-the micro-runtime's tag symbols. The native musl oracle for the
+tag. zig 0.16 (LLVM 21) does not build it: its backend rejects the
+micro-runtime's tag symbols (hand-checked 2026-10-13). The native musl oracle for the
 differential is compiled with zig in every arrangement.
 
 The release form is stripped at link (`--strip-all`) and passed through
@@ -180,7 +180,7 @@ directory. `io.popen` and `os.execute` fail as on a machine with no shell.
 A program with compiled code of its own — C, C++ or Rust for wasm32 —
 that calls Lua's C API links Lua into the same module as that code,
 from the tarball `make sdk` builds (`lua-wasm-sdk-<version>.tar.gz`,
-attached to every release): `lib/liblua-wasm.a`, the archive `lua.wasm`
+attached to releases from v0.4.0 on): `lib/liblua-wasm.a`, the archive `lua.wasm`
 itself is linked from (`onelua.o`, the EH unit, the OS layer, the
 filesystem, every musl object, by an MRI script since `ar` cannot nest
 archives), `lib/crt-reactor.o`, `include/` (Lua's headers and the
@@ -192,9 +192,10 @@ four imports, `luaw_openlibs`, the `luaw_*` exports, and
 `-DLUAW_EXTERNAL_EH` for a consumer with a real C++ runtime.
 
 `lua.wasm` is that archive linked with `crt-reactor.o`,
-`--export=luaw_init` and `--export-dynamic`, nothing else; `make
-sdk-check` relinks it from the tarball's `lib/` alone and compares
-bytes. `make embed-check` unpacks the tarball just built, builds
+`--export=luaw_init`, `--export-dynamic`, `--strip-all`, `--no-entry`
+and the 8 MiB stack, then `wasm-opt`; `make sdk-check` unpacks the
+tarball just built, relinks it from that `lib/` alone with the same
+flags and compares bytes. `make embed-check` unpacks the tarball just built, builds
 `examples/embed/app.c` against it with `EMBED_CC` (default `clang-20`;
 `zig cc` with `EMBED_RT` naming the builtins), runs it under
 `examples/embed/host.mjs` and compares output and exit status with
@@ -219,8 +220,9 @@ whole before Lua starts — piped or redirected input works; a terminal's
 typed input is not forwarded, so `lua -i` sees end of input); `--dir`
 mirrors a host directory into the in-memory filesystem at `/`, `--env`
 sets variables, `--tz` installs a zone file at `/etc/localtime`. Node ≥
-24.15 runs the artifact as is; 24.0–24.14 need `--experimental-wasm-exnref`
-(no script here passes it).
+24.15 runs the artifact as is; older Node needs `--experimental-wasm-exnref`
+(no script here passes it; the project's own runs on 22.22 with the flag
+are hand runs, not a witnessed floor).
 
 Note the **attached** form `-e"_port=true"` (no space) when a following
 argument itself begins with `--`: it is ambiguous to the standalone

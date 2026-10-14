@@ -3,8 +3,9 @@
 ** musl is compiled unmodified for wasm32 (port/wasm32, port/musl.mk) and
 ** issues Linux syscalls as it would on Linux; port/wasm32/syscall_arch.h
 ** routes every one of them to __luaw_syscall below. This file answers
-** them. The outside world is reached only through three imports in the
-** "luaw" module, the whole host contract of lua.wasm:
+** them. The outside world is reached only through imports in the
+** "luaw" module; this file uses three of the four (the fourth, call,
+** is the bridge in src/onelua.c):
 **
 **   write(fd, ptr, len)        bytes for stdout (1) or stderr (2)
 **   now() -> f64               wall clock, milliseconds since the epoch

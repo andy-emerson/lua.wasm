@@ -9,8 +9,9 @@
 # directory; bits/syscall.h.in and the rest of bits/ are riscv32's,
 # verbatim -- the generic 32-bit tables -- except alltypes.h.in, where
 # _Addr and _Reg are long to match clang's wasm32 size_t and intptr_t),
-# the OS underneath is port/luaw-sys.c (one syscall dispatcher over the
-# three luaw imports), and the crt is port/luaw-crt.c (_initialize runs
+# the OS underneath is port/luaw-sys.c (one syscall dispatcher over
+# three of the four luaw imports; call, the bridge's, is onelua.c's),
+# and the crt is port/luaw-crt.c (_initialize runs
 # the constructors; no main).
 #
 # Only the source directories Lua's libc use reaches are compiled; the

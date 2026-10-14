@@ -144,7 +144,7 @@ lua-js: $(LUA_JS)
 # same module as that code, so it takes the pieces lua.wasm is linked
 # from, before the link: lib/liblua-wasm.a (the archive lua.wasm itself is
 # linked from, above), lib/crt-reactor.o (named explicitly on
-# the link line, as crt objects are), include/ (Lua's four headers and
+# the link line, as crt objects are), include/ (Lua's five headers and
 # the libc's, laid out as a sysroot), src/ (the sources, a fallback for
 # unusual defines), examples/embed (below), LINK.md (doc/sdk/LINK.md,
 # the consumer's notes), PIN. lua.wasm is this archive linked with
@@ -164,7 +164,7 @@ sdk: $(LUA_WASM_A) $(MUSL_BUILD)/luaw-crt.o doc/sdk/LINK.md
 	cp $(MUSL_DIR)/arch/generic/bits/*.h $(SDK_DIR)/include/bits/ && cp $(MUSL_ARCH)/bits/*.h $(SDK_DIR)/include/bits/ && cp $(MUSL_BUILD)/include/bits/*.h $(SDK_DIR)/include/bits/
 	cp src/lua.h src/lauxlib.h src/lualib.h src/luaconf.h src/lua.hpp $(SDK_DIR)/include/
 	cp src/*.c src/*.h $(SDK_DIR)/src/ && cp port/luaw-eh.cpp port/luaw-crt.c port/luaw-sys.c port/luaw-fs.c $(SDK_DIR)/src/port/
-	printf 'lua.wasm %s\ncommit %s\nlua 5.4.8 verbatim; musl 1.2.6 verbatim\n' "$(SDK_VERSION)" "$$(git rev-parse HEAD 2>/dev/null || echo unknown)" > $(SDK_DIR)/PIN
+	printf 'lua.wasm %s\ncommit %s\nhttps://github.com/andy-emerson/lua.wasm\nlua 5.4.8 verbatim; musl 1.2.6 verbatim\n' "$(SDK_VERSION)" "$$(git rev-parse HEAD 2>/dev/null || echo unknown)" > $(SDK_DIR)/PIN
 	mkdir -p $(SDK_DIR)/examples && cp -r examples/embed $(SDK_DIR)/examples/embed
 	cp doc/sdk/LINK.md $(SDK_DIR)/LINK.md
 	tar czf $(SDK).tar.gz -C build/sdk $(SDK)
@@ -172,8 +172,8 @@ sdk: $(LUA_WASM_A) $(MUSL_BUILD)/luaw-crt.o doc/sdk/LINK.md
 
 # the proof that the tarball is the artifact's own bytes: the tarball
 # just built is unpacked, lua.wasm is relinked from its lib/ alone with
-# the link line LINK.md gives a consumer, optimized the same way, and
-# must be byte-identical to lua.wasm
+# the Makefile's own link flags, optimized the same way, and must be
+# byte-identical to lua.wasm
 SDK_CHECK= build/sdk/check/$(SDK)
 sdk-check: sdk $(WASM_O) | musl-rtlib
 	rm -rf build/sdk/check && mkdir -p build/sdk/check && tar xzf $(SDK).tar.gz -C build/sdk/check

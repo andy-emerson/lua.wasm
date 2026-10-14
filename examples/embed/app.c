@@ -4,7 +4,8 @@
 ** registers a C function for Lua to call, runs a script, and catches a
 ** Lua error in C. Only stock Lua's API is used (lua.h, lauxlib.h,
 ** lualib.h): nothing here is specific to this build except the host
-** interface its module imports (doc/wasm.md), which host.mjs supplies.
+** interface its module imports (LINK.md; the repository's doc/wasm.md),
+** which host.mjs supplies.
 ** Built by build.sh against the tarball's sysroot with plain clang;
 ** host.mjs runs it under Node and expect.txt is what it must print.
 */

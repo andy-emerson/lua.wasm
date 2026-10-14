@@ -1,5 +1,9 @@
 # Linking Lua from this tarball
 
+Project: https://github.com/andy-emerson/lua.wasm — `PIN` names the
+version and commit these bytes come from; `doc/` there holds the full
+references this file points to.
+
 This tarball is for a program with compiled code of its own — C, C++
 or Rust built for wasm32 — that calls Lua's C API and so must link Lua
 into the same module as that code. It holds the pieces `lua.wasm` is
@@ -60,8 +64,10 @@ Line by line:
 
 `examples/embed/build.sh $SDK` runs exactly this; `node
 examples/embed/host.mjs app.wasm` runs the result and
-`examples/embed/expect.txt` is what it prints. The release's CI runs
-the example with plain clang 20, and with zig cc as the consumer.
+`examples/embed/expect.txt` is what it prints. The release that
+produced this tarball built and ran the example with clang 20 before
+tagging; the project's deep witness repeats it with `zig cc` as the
+consumer after the tag, and it has been run by hand with clang 18.
 
 Rust (derived from the C line; not run by this project's CI):
 target `wasm32-unknown-unknown`, `cargo:rustc-link-search=$SDK/lib`
@@ -80,8 +86,8 @@ Optimizing the module afterwards is yours: the project ships
 
 The module imports four functions in module `luaw`, whatever you
 reach of the archive, because stdio, the clock and the bridge sit on
-them. Signatures and the value encoding are in `doc/wasm.md` of the
-repository; the minimum:
+them. Signatures and the value encoding are in the repository's
+`doc/wasm.md`; the minimum:
 
 | import | the host's job |
 |---|---|
@@ -90,7 +96,7 @@ repository; the minimum:
 | `read(ptr, maxlen) -> n` | stdin; 0 is end of input |
 | `call(name, nlen, args, alen, out) -> status` | the bridge for the `js` library; a host with nothing to offer returns 2 (no such name) for every call |
 
-`examples/embed/host.mjs` is these four in twenty lines, for Node.
+`examples/embed/host.mjs` is these four in thirty lines, for Node.
 The module runs where the standard wasm exception-handling encoding
 runs: Chrome 137, Firefox 131, Safari 18.4, Node 24.15 and later.
 
@@ -103,13 +109,14 @@ libc's `open`; harmless to ignore).
 - **`luaw_openlibs(lua_State *L)`**: the `js` library (`js.name(...)`
   to the host's `call`, tokens for promises) and the fetching
   `require` on a state of yours, after `luaL_openlibs`. Declare it
-  yourself: `void luaw_openlibs(lua_State *L);` — there is no header
-  for it yet.
+  yourself: `void luaw_openlibs(lua_State *L);` — no header declares
+  it.
 - **The `luaw_*` host interface** (`luaw_init`, `luaw_run`,
   `luaw_start`/`luaw_step`, `luaw_main`, the filesystem and
   environment calls; the README tabulates them): export what you want
   with `-Wl,--export=luaw_init` and so on. `lua.wasm` is this archive
-  with `--export=luaw_init` and `--export-dynamic`, nothing else.
+  with `--export=luaw_init`, `--export-dynamic` and `--strip-all` (the
+  `--no-entry` and stack size above), nothing else, then `wasm-opt`.
 - **A real C++ runtime of your own** (a libc++abi built with wasm
   exceptions): compile `src/port/luaw-eh.cpp` yourself with
   `-fwasm-exceptions -mllvm -wasm-use-legacy-eh=false
