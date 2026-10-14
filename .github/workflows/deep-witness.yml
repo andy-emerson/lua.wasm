@@ -67,9 +67,10 @@ jobs:
           WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling"
           MUSL_RTLIB=/usr/lib/llvm-18/lib/clang/18/lib/wasi/libclang_rt.builtins-wasm32.a
           WASM_OPT=node_modules/binaryen/bin/wasm-opt
-      - name: the tarball relinks byte-identical under this driver too
+      - name: the tarball relinks byte-identical under this driver too, and its example builds with zig cc as the consumer
         run: >
-          make sdk-check
+          make sdk-check embed-check EMBED_CC="python3 -m ziglang cc"
+          EMBED_RT=/usr/lib/llvm-18/lib/clang/18/lib/wasi/libclang_rt.builtins-wasm32.a
           WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar"
           WASM_CLANGXX="python3 -m ziglang c++"
           WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling"

@@ -1,0 +1,7 @@
+Lua says: Lua 5.4
+host.square(12) =	144.0
+3.141593 2147483648   0.3
+1 4 9 16 25	5	5
+script returned 10
+caught in C: raised in Lua
+exit 10

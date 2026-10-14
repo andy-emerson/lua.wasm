@@ -176,6 +176,22 @@ sdk-check: sdk $(WASM_O) | musl-rtlib
 	@if [ -n "$(WASM_OPT)" ]; then $(WASM_OPT) $(WASM_OPT_FLAGS) build/sdk/relinked.linked.wasm -o build/sdk/relinked.wasm; else cp build/sdk/relinked.linked.wasm build/sdk/relinked.wasm; fi
 	cmp build/sdk/relinked.wasm $(WASM_O) && echo "SDK CHECK PASS: lua.wasm relinked from the tarball is byte-identical"
 
+# ── The embedding example: examples/embed ─────────────────────────────────
+# What a consumer with compiled code of its own does with the tarball:
+# app.c (stock Lua API only) compiled and linked by plain clang against
+# the unpacked tarball as a sysroot (build.sh), run by a host of four
+# imports (host.mjs). The check unpacks the tarball make sdk just built,
+# so what is witnessed is the shipped form, and compares the program's
+# output and exit status with expect.txt. EMBED_CC is the consumer's
+# compiler (any clang; clang 20 is not required for a consumer's own C).
+EMBED_CC?= clang-20
+NODE?= node
+embed-check: sdk
+	rm -rf build/embed && mkdir -p build/embed && tar xzf $(SDK).tar.gz -C build/embed
+	CC="$(EMBED_CC)" RT="$(EMBED_RT)" sh examples/embed/build.sh build/embed/$(SDK) build/embed/app.wasm
+	$(NODE) examples/embed/host.mjs build/embed/app.wasm > build/embed/out.txt 2>&1; echo "exit $$?" >> build/embed/out.txt
+	cmp build/embed/out.txt examples/embed/expect.txt && echo "EMBED CHECK PASS: the tarball's example builds with $(EMBED_CC), runs, and prints what expect.txt says"
+
 # ── The benchmark (issue #54) ───────────────────────────────────────────────
 # lua.js against Wasmoon and fengari-web, pinned, in the same page under a
 # real engine: the workloads in bench/, 20 rotated rounds each on fresh
@@ -204,4 +220,4 @@ differential: $(WASM_O) $(NATIVE_MUSL_LUA)
 	sh scripts/differential.sh $(WASM_O) $(NATIVE_MUSL_LUA)
 
 # list targets that do not create files (but not all makes understand .PHONY)
-.PHONY: $(PLATS) clean wasm lua-js sdk sdk-check bench lua-debug oracle differential
+.PHONY: $(PLATS) clean wasm lua-js sdk sdk-check embed-check bench lua-debug oracle differential
