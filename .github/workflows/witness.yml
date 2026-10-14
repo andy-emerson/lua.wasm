@@ -17,12 +17,12 @@
 #   stock 5.4.8 (src/onelua.c and the tests/libs/P1 placeholder are this
 #   repository's), and the vendored musl is the signed 1.2.6 release.
 #
-# Toolchain: zig (pinned 0.15.1 = clang 20.1.2) -- the standard EH
-# encoding needs LLVM 20+, which Ubuntu does not package; zig's cc/c++/ar
-# build musl and Lua for wasm32-freestanding and bring the wasm32
-# compiler-rt builtins. 0.16 (LLVM 21) miscompiles this build (its
-# backend rejects the micro-runtime's tag symbols; see src/onelua.c).
-# Binaryen (npm) supplies wasm-opt.
+# Toolchain: the Makefile defaults -- llvm.org's clang-20, lld-20 and
+# the wasm32 compiler-rt builtins (the standard EH encoding needs LLVM
+# 20+, which Ubuntu does not package). zig 0.15.1 is installed for one
+# thing: the native musl oracle the differential compares against. The
+# zig recipe the README offers (zig as the compiler) is witnessed by
+# deep-witness.yml. Binaryen (npm) supplies wasm-opt.
 name: witness
 on:
   push:
@@ -74,31 +74,22 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: toolchain (zig = clang 20.1.2 and the musl build's compiler; LLVM's wasm32 builtins for the link, port/musl.mk; binaryen for wasm-opt)
+      - name: llvm.org clang-20, lld-20, the wasm32 compiler-rt builtins
+        # No sysroot: the libc is the vendored musl, built here.
         run: |
-          python3 -m pip install 'ziglang==0.15.1' && npm i --no-save binaryen@132.0.0
-          sudo apt-get install -y libclang-rt-18-dev-wasm32
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-20 main" | sudo tee /etc/apt/sources.list.d/llvm20.list
+          sudo apt-get update
+          sudo apt-get install -y clang-20 lld-20 libclang-rt-20-dev-wasm32
+          clang-20 --version | head -1
+      - name: binaryen (wasm-opt), and zig for the native musl oracle only
+        run: npm i --no-save binaryen@132.0.0 && python3 -m pip install 'ziglang==0.15.1'
       - name: the libc alone -- smoke (printf/strtod exactness, errno, locale, stdin) and allocator stress
-        run: >
-          make libc-smoke libc-stress
-          WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar"
-          MUSL_RTLIB=/usr/lib/llvm-18/lib/clang/18/lib/wasi/libclang_rt.builtins-wasm32.a
+        run: make libc-smoke libc-stress MUSL_AR=llvm-ar-20
       - name: build lua.wasm (release form) and print its size
-        run: >
-          make wasm
-          WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar"
-          WASM_CLANGXX="python3 -m ziglang c++"
-          WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling"
-          MUSL_RTLIB=/usr/lib/llvm-18/lib/clang/18/lib/wasi/libclang_rt.builtins-wasm32.a
-          WASM_OPT=node_modules/binaryen/bin/wasm-opt
+        run: make wasm MUSL_AR=llvm-ar-20 WASM_OPT=node_modules/binaryen/bin/wasm-opt
       - name: the tarball (make sdk), and lua.wasm relinked from it alone is byte-identical
-        run: >
-          make sdk-check
-          WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar"
-          WASM_CLANGXX="python3 -m ziglang c++"
-          WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling"
-          MUSL_RTLIB=/usr/lib/llvm-18/lib/clang/18/lib/wasi/libclang_rt.builtins-wasm32.a
-          WASM_OPT=node_modules/binaryen/bin/wasm-opt
+        run: make sdk-check MUSL_AR=llvm-ar-20 WASM_OPT=node_modules/binaryen/bin/wasm-opt
       - name: host-interface witness (imports, exports, exit, messages, adversarial battery)
         run: node scripts/interface-witness.mjs lua.wasm
       - name: exception handling stays in one function (the interpreter carries no landing pads)
@@ -106,13 +97,7 @@ jobs:
       - name: full official suite through stock lua.c (luaw_main), Node
         run: node scripts/suite-witness.mjs lua.wasm tests
       - name: differential against native Lua 5.4.8 on musl (byte-identical stdout, stderr, exit status)
-        run: >
-          make differential
-          WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar"
-          WASM_CLANGXX="python3 -m ziglang c++"
-          WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling"
-          MUSL_RTLIB=/usr/lib/llvm-18/lib/clang/18/lib/wasi/libclang_rt.builtins-wasm32.a
-          WASM_OPT=node_modules/binaryen/bin/wasm-opt
+        run: make differential MUSL_AR=llvm-ar-20 WASM_OPT=node_modules/binaryen/bin/wasm-opt
       - name: build lua.js (lua.wasm inlined) and print its size
         run: make lua-js WASM_OPT=node_modules/binaryen/bin/wasm-opt
       - uses: actions/upload-artifact@v4

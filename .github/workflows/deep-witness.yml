@@ -5,10 +5,13 @@
 # do not chain-trigger workflows, so release.yml also dispatches this
 # workflow explicitly; the on.push.tags trigger covers hand-pushed tags.
 #
-#   clang20-plain    -> issue #14: the artifact builds and passes its
-#                       witnesses under llvm.org's plain clang-20 with
-#                       the Makefile DEFAULTS (no zig), proving the
-#                       build is not tied to one driver.
+#   zig-recipe       -> issue #14, inverted since CI moved to the
+#                       Makefile defaults: the artifact builds and
+#                       passes its witnesses under the README's zig
+#                       recipe (zig 0.15.1 = clang 20.1.2 as the
+#                       compiler, LLVM's builtins archive named for the
+#                       link; port/musl.mk), proving the build is not
+#                       tied to one driver.
 name: deep-witness
 on:
   push:
@@ -18,15 +21,15 @@ on:
       job:
         description: "which deep witness to run"
         type: choice
-        options: [clang20-plain, all]
-        default: clang20-plain
+        options: [zig-recipe, all]
+        default: zig-recipe
 
 # On a tag push, `inputs` is empty: every job's `if` treats that event
 # as "all".
 
 jobs:
-  clang20-plain:
-    if: github.event_name == 'push' || inputs.job == 'clang20-plain' || inputs.job == 'all'
+  zig-recipe:
+    if: github.event_name == 'push' || inputs.job == 'zig-recipe' || inputs.job == 'all'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -36,20 +39,39 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: llvm.org clang-20, lld, the wasm32 compiler-rt builtins
-        # No sysroot: the libc is the vendored musl, built here.
+      - name: zig 0.15.1 (clang 20.1.2), Ubuntu's wasm32 compiler-rt builtins for the link, binaryen
+        # No sysroot: the libc is the vendored musl, built here. zig's own
+        # compiler-rt stays out of the link (it carries a libm; port/musl.mk).
         run: |
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-20 main" | sudo tee /etc/apt/sources.list.d/llvm20.list
-          sudo apt-get update
-          sudo apt-get install -y clang-20 lld-20 libclang-rt-20-dev-wasm32
-      - name: binaryen (wasm-opt) and zig for the native musl oracle only
-        run: npm i --no-save binaryen@132.0.0 && python3 -m pip install 'ziglang==0.15.1'
-      - name: build with the Makefile DEFAULTS (clang-20, clang++-20, llvm-ar-20)
-        run: make wasm MUSL_AR=llvm-ar-20 WASM_OPT=node_modules/binaryen/bin/wasm-opt
+          python3 -m pip install 'ziglang==0.15.1' && npm i --no-save binaryen@132.0.0
+          sudo apt-get install -y libclang-rt-18-dev-wasm32
+      - name: build with the README's zig recipe
+        run: >
+          make wasm
+          WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar"
+          WASM_CLANGXX="python3 -m ziglang c++"
+          WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling"
+          MUSL_RTLIB=/usr/lib/llvm-18/lib/clang/18/lib/wasi/libclang_rt.builtins-wasm32.a
+          WASM_OPT=node_modules/binaryen/bin/wasm-opt
       - name: host-interface witness
         run: node scripts/interface-witness.mjs lua.wasm
+      - name: exception handling stays in one function
+        run: node scripts/eh-check.mjs lua.wasm
       - name: full official suite through stock lua.c, Node
         run: node scripts/suite-witness.mjs lua.wasm tests
       - name: differential against native Lua 5.4.8 on musl
-        run: make differential MUSL_AR=llvm-ar-20 WASM_OPT=node_modules/binaryen/bin/wasm-opt
+        run: >
+          make differential
+          WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar"
+          WASM_CLANGXX="python3 -m ziglang c++"
+          WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling"
+          MUSL_RTLIB=/usr/lib/llvm-18/lib/clang/18/lib/wasi/libclang_rt.builtins-wasm32.a
+          WASM_OPT=node_modules/binaryen/bin/wasm-opt
+      - name: the tarball relinks byte-identical under this driver too
+        run: >
+          make sdk-check
+          WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar"
+          WASM_CLANGXX="python3 -m ziglang c++"
+          WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling"
+          MUSL_RTLIB=/usr/lib/llvm-18/lib/clang/18/lib/wasi/libclang_rt.builtins-wasm32.a
+          WASM_OPT=node_modules/binaryen/bin/wasm-opt

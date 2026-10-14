@@ -23,16 +23,20 @@ $(PLATS) clean:
 # contract and witnesses: doc/wasm.md.
 #
 # Toolchain: clang 20+ (the standard EH encoding) with LLVM's wasm32
-# compiler-rt builtins. `zig c++` / `zig cc` is a self-contained clang
-# 20.1.2 and is what CI uses; its own compiler-rt stays out of the link
-# (it carries a libm; port/musl.mk) so the builtins archive is named:
+# compiler-rt builtins -- the defaults below (clang-20, clang++-20,
+# llvm-ar; llvm.org's packages clang-20 lld-20 libclang-rt-20-dev-wasm32),
+# which is what CI and the release build with:
+#   make wasm MUSL_AR=llvm-ar-20 WASM_OPT=node_modules/binaryen/bin/wasm-opt
+# The zig recipe (zig 0.15.1 = a self-contained clang 20.1.2, no apt
+# repository) builds the same artifact; zig's own compiler-rt stays out
+# of the link (it carries a libm; port/musl.mk), so the builtins archive
+# is named:
 #   make wasm WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar" \
 #             WASM_CLANGXX="python3 -m ziglang c++" \
 #             WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling" \
 #             MUSL_RTLIB=/usr/lib/llvm-18/lib/clang/18/lib/wasi/libclang_rt.builtins-wasm32.a \
 #             WASM_OPT=node_modules/binaryen/bin/wasm-opt
-# Plain clang 20: WASM_CC=clang-20 MUSL_AR=llvm-ar-20 WASM_CLANGXX=clang++-20
-# (needs libclang-rt's wasm32 builtins installed). Run it:
+# Run it:
 #   node scripts/lua.mjs lua.wasm -- script.lua
 WASM_CLANGXX= clang++-20
 WASM_STACK= 8388608
