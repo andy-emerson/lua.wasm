@@ -161,15 +161,15 @@ Conventions settled alongside, now design:
 | **D5** | Local time, environment | musl's stock handling: `TZ` or `/etc/localtime`, else UTC. The environment starts empty; hosts add to it with `luaw_setenv`. `lua.js` will generate the visitor's zone file from the browser's own rules (merge 4); until then hosts supply `TZ` or a zone file. Needs file-backed `mmap` in the syscall layer (musl memory-maps zone files). | A time-zone import (modifies musl); shipping the tz database (size, upkeep). |
 | **D6** | Removals | `lua-lib.wasm` as a separate artifact; the WASI build and runners; the link-Lua-in shape (`liblua.a`, `examples/embed/`, `doc/embedding.md`, `WASM_EH=external`); the unused C sjlj path; the `onelua.c` WASI workarounds (`tmpnam`, `tmpfile`, `fopen("")`, `setlocale`, `system`); the legacy EH encoding (per D9). Deep-witness is retargeted, not removed. *Done in merge 3*: the removal record with each item's reopen condition is [`wasi-sunset-2026-10-13.md`](wasi-sunset-2026-10-13.md). | See the removal record. |
 | **D7** | stdin | The host plays the environment: the `read` import answers with typed text, piped data or end of input (0). Stock `io.read` throughout; stock interactive `lua` works under Node through `luaw_main`. *As built:* `scripts/lua.mjs` reads stdin whole before Lua starts and does not forward a terminal's typed input, so `lua -i` under it sees end of input; the interactive REPL under Node is not built. | Always-empty stdin and pre-supplied-only stdin (each hard-wires one environment into the module). |
-| **D8** | `lua.js` defaults | Closed 2026-10-13; the fifteen rows and their outcomes are in the section below. In one line: a `<script type="text/lua">` tag's terminal is the page, a JavaScript call's terminal is the console; Lua behaviour stays Lua's; every tag runs as the resident coroutine; one file, `lua.js`, with the module inlined; a JavaScript surface that is the module's own contract now and a bridge next (D11). | See the section. |
+| **D8** | `lua.js` defaults | Closed 2026-10-13; the fifteen rows and their outcomes are in the section below. In one line: a `<script type="text/lua">` tag's terminal is the page, a JavaScript call's terminal is the console; Lua behaviour stays Lua's; every tag runs as the resident coroutine; one file, `lua.js`, with the module inlined; a JavaScript surface that is the module's own contract now and a bridge next (D11, closed below). | See the section. |
 | **D9** | Supported runtimes | Standard EH encoding only. Floors (webassembly.org feature data, `exceptionsFinal`): Chrome 137, Firefox 131, Safari 18.4, Node 24.15, Deno 2.3.2, wasmtime 47. CI: current Chromium, Firefox, WebKit; Node ≥ 24.15. | Shipping the legacy encoding too (deprecated; a documented V8 12.x host crash; untestable old Safari). Reopen if real users turn up on older devices. |
 | **D10** | How it lands | Four merges: (1) this record and vendored musl; (2) the new artifact built and tested beside today's; (3) the cutover and removals; (4) `lua.js`. *Merges 1–3 landed 2026-10-13; merge 4 built the same day on D8.* | One or two large merges. |
 
 Deferred, recorded as open work: a non-JavaScript host test (wasmtime,
 issue #53) — "runs in any wasm host" is not claimed until one exists; a
 reproducible benchmark against Wasmoon in the repo (issue #54; the
-numbers above are session observations); **D11**, the JavaScript bridge
-(below), which gates merge 5.
+numbers above are session observations; landed as `doc/bench.md`); **D11**,
+the bridge, closed below (2026-10-14) and gating merge 5.
 
 ## Post-merge review (2026-10-13, after merges 1–3)
 
@@ -244,18 +244,58 @@ finishes. The command-line REPL is Node-only: in a page `io.read`
 is called from C and must return at once, so a REPL page is built on
 `Lua.run` per line, as fengari's are.
 
-**D11 — the JavaScript bridge (open; gates merge 5).** Four questions,
-each freezing semantics: handle lifetimes (a JavaScript value held by Lua
-is released by `__gc`; a Lua value held by JavaScript by
-`FinalizationRegistry` — fengari gets leak-freedom for free, we must earn
-it); type mapping (strings, numbers, booleans, `nil`/`null`/`undefined`,
-and whether tables and arrays cross by copy or by handle); exceptions
-crossing (a JavaScript exception thrown inside an import unwinds through
-the micro-runtime's `catch(...)`, which today would mistake it for a Lua
-error); and whether the `js` library is always in `lua.wasm` or an
-optional build. The use-case table that framed it (fengari's and Wasmoon's
-uses, parity and out-performing needs per row) is in issue #58. Packaging
-beyond the one file — npm, an ES-module output — is decided with it.
+## D11 closed: the bridge (2026-10-14)
+
+M5's destination (the Human, after v0.3.0): M4 stands on its own —
+high-fidelity, minimal-host, single-file stock Lua 5.4 — and what still
+makes people choose Wasmoon or fengari is interop. M5 removes the
+interop reasons; it does not remove the others (fengari needs no wasm
+and is 5.3; Wasmoon has npm, types and a community — the packaging
+task, issue #69), and says so.
+
+**The principle (closed by the Human, 2026-10-13):** *values cross by
+copy, never by reference; the boundary carries data and named calls,
+not an object graph.* A proxy-and-handle bridge — Wasmoon's shape, or
+fengari's imitated in wasm — spends what wasm is good at (isolation,
+deterministic memory, predictable speed) on per-property boundary
+crossings and garbage-collector entanglement on both sides. Copy-across
+keeps them. What it gives up, as a decision: `js.document.body.style.color
+= "red"` from Lua. Reopen trigger: a user with a workload that batching
+cannot express.
+
+| # | decision | ruling | rejected |
+|---|---|---|---|
+| D11.1 | how Lua calls out | **one new synchronous import, `luaw.call(name, args)`** — four imports in all. Reopens D2b's rejection of a synchronous import on its own trigger ("if synchronous calls prove necessary") | reusing the yield channel for every call (fails inside C callbacks, costs a frame each); one import per registered function (the import list would depend on the page) |
+| D11.2 | value encoding | **a binary encoding in linear memory**: nil, boolean, integer, float, string, bytes, table (array and hash parts) by copy, with a stated size limit per call and a documented loss list (functions, userdata, cycles do not cross) | JSON text (integers become doubles, bytes become base64, two copies); scalars only |
+| D11.3 | what Lua can reach | **two levels.** Module: the import carries a name; the module knows no names; the host owns the table, and a host that registers nothing has a module that cannot call out (the default, and the sandbox). lua.js: the page registers functions by assigning into `Lua.js` (`Lua.js.fetch = fn`), mirrored as `js.fetch` in Lua, plus a few built-ins with no object identity (log, time, fetch returning bytes) | any global by name (collapses to "any global function whose arguments copy", and is not a sandbox); registered functions only with no built-ins |
+| D11.4 | async | **tokens, continuations stay in Lua.** A call whose result is a promise returns a token (an integer the host hands out; the host keeps the token→promise map and clears it on settle). Settlement arrives as one message on the channel `luaw_step` already carries: token and value, by copy. The Lua-side library wraps the token in a small table: `t:await()` yields until it settles (stock `coroutine.yield` in a loop); `t:when(fn)` registers a Lua function in a Lua table, run by the step that receives the message; `js.poll()` is the primitive both are built on and stays public. Several tokens may be in flight; a `Lua.run` chunk can start a call and is settled at the next step; repeated events use the same machinery (a subscription is a token, each event a message). Stated limit: a continuation runs only when the program steps — the module never runs on its own | yield on the promise only (one await at a time, resident program only); callbacks crossing (a Lua function becomes a JavaScript value: the leak class the principle forbids); both; poll only (every program writes the same loop) |
+| D11.5 | errors crossing | **a JavaScript exception inside the dispatcher is caught on the host side and returned as a Lua error with its message; a Lua error reaches JavaScript only through `Lua.run`'s throw** | letting a JavaScript exception unwind through wasm (the micro-runtime's `catch(...)` would mistake it for a Lua error; with the static exception slot a foreign exception cannot be rethrown) |
+| D11.6 | always in, or a build flag | **always in**; reopen if the library measures above a few KB compressed | a flag and two artifacts |
+
+**Where the library lives (a consequence, not a seventh decision):**
+the `js` library is Lua source embedded in `src/onelua.c`'s
+host-interface section and registered in `package.preload` at
+`luaw_init`, so `lua.wasm` alone carries the whole Lua-side API and any
+host — lua.js, a Node host, a wasmtime host, an M6 link-in consumer in
+C — gets it by implementing the one import and feeding settle messages
+through `luaw_step`. The core stays verbatim: this is port code beside
+`luaw_run`. The `require` shim moves the same way for the same reason;
+lua.js then supplies only the fetch. Both ship as one artifact (D11.6).
+
+**Names (closed with the rulings):** the library is `js` on the Lua
+side and `Lua.js` on the page, mirrored; registered names are callable
+directly (`js.fetch(url)`), with `js.call(name, ...)` for names that are
+not identifiers; the token's methods are `await` and `when`; the
+primitive is `js.poll()`. `then` is a Lua keyword, hence `when`. The
+module's `luaw_` prefix stays: it is seen only by host authors, and in a
+link-in build it keeps the exports out of `lua_`, `luaL_` and musl's
+namespace.
+
+**Evidence M5 must earn** (issue #58): a bridge column in `make bench`
+— call overhead each way, a table crossing, a frame's UI or game update
+end to end with Lua computing and the page rendering — against Wasmoon
+and fengari, reported whichever way it falls. M5 is not done on
+ergonomics alone. The use-case table that framed D11 stays in #58.
 
 ## What this does not change
 

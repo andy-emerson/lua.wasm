@@ -131,7 +131,11 @@ try {
         const res = await pages[impl].evaluate(async (src) => {
           window.__out.length = 0;
           const vm = await window.__bench.newVM();
-          try { const ms = await vm.run(src); return { ms, out: window.__out.join('') }; }
+          try {
+            /* a page-driven workload (bridge_in): the page hands Lua 50,000 ten-byte strings */
+            const ms = src.startsWith('-- the bridge, the other way') ? await vm.drive(src, 50000, 'ten bytes!') : await vm.run(src);
+            return { ms, out: window.__out.join('') };
+          }
           catch (e) { return { error: e.message, out: window.__out.join('') }; }
           finally { vm.close(); }
         }, workloads[name]);

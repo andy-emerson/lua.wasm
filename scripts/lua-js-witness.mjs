@@ -138,6 +138,21 @@ const cases = [
     eq('start/step: a lazy require is served, a message each way, finish', r.steps, [[1, 'ready hello js (deep)'], [1, 'got reply'], [0, null]]);
     eq('os.exit through Lua.run throws, records, and later calls refuse', [r.exit, r.afterExit], [['VM exited (status 9)', 9], 'VM exited (status 9)']);
   }],
+  ['bridge', async (p) => {
+    const out = await p.outputs();
+    eq('Lua.js functions are js.name(...) in Lua: values by copy both ways (numbers, strings, a table in, an object with an array whose null ends the sequence, text, bytes and a BigInt out); an exception and a missing name are Lua errors',
+      out[0].split('\n').slice(0, 5).join('\n'),
+      "5\tab\nfalse\tno\nfalse\tno such function 'nope' (the host registered none by that name)\n3\t2\tnil\théllo\t2\t255\n9007199254740993000\tinteger");
+    eq('two promises in flight settle in their own order: the when continuation first, the await after; fetch gives bytes or an error naming the URL and status; now is an integer',
+      out[0].split('\n').slice(5, 10).join('\n'),
+      "b first\ttrue\tb\na\ttrue\ta\ntrue\t[1,2,3]\nfalse\t/pages/nope.json: HTTP 404\ninteger");
+    check('js.log reaches the console', p.console.log.some(m => m.includes('to the console') && m.includes('42')), p.console.log);
+    await p.page.waitForFunction(() => window.__bridge && window.__bridge.done, null, { timeout: 60_000 });
+    const r = await p.page.evaluate(() => window.__bridge);
+    check('the page script ran to the end', !r.err, r.err);
+    eq('a function assigned into Lua.js after ready is callable from a Lua.run chunk; await from such a chunk is refused with a stated reason',
+      [r.late, r.awaitFromRun], ['late!\n', '(JavaScript):1: await: only the resident program can wait for a token (use :when or js.poll)']);
+  }],
   ['yield', async (p) => {
     eq('a yielding tag resumes each frame and finishes; the next tag waits', await p.outputs(), ['frame 1\nframe 2\nframe 3\nframe 4\nframe 5\ndone\n', 'second tag ran after\n']);
     const frames = await p.page.evaluate(() => window.__raf);

@@ -79,6 +79,44 @@ the size. Every witness runs on that file.
 | `write(fd, ptr, len)` | bytes for fd 1 (stdout) or 2 (stderr); musl's stdio treats fds 0–2 as a terminal (line-buffered stdout) |
 | `now() -> f64` | milliseconds since the Unix epoch, fractional; the OS layer never returns the same instant twice, so a host clock with millisecond resolution (Firefox) is fine |
 | `read(ptr, maxlen) -> n` | stdin: fill up to `maxlen` bytes and return the count, 0 for end of input; called only when Lua reads stdin and musl's buffer is empty |
+| `call(name, nlen, args, alen, out) -> status` | the bridge: Lua calls the host's function `name` with `args` (an encoded buffer, below). The host writes the result into memory it gets from `luaw_alloc` and stores its pointer and length at `out[0]`, `out[1]`; returns 0 (a result), 1 (an error value: Lua raises its message), 2 (no such name). The module frees the buffer. A host must not re-enter the VM from inside this import (`luaw_run`, `luaw_step`...); `luaw_alloc` and `luaw_free` are fine. A host that knows no names returns 2 for every call, which is the default and the sandbox |
+
+**The bridge's encoding** (values cross by copy, never by reference —
+the design record's D11). Little-endian; a tag byte first:
+
+| tag | value |
+|---|---|
+| 0 / 1 / 2 | nil / false / true |
+| 3 | integer, i64 |
+| 4 | float, f64 |
+| 5 | text: u32 length, UTF-8 bytes (a Lua string going out; a JavaScript string coming in) |
+| 6 | bytes: u32 length, bytes (`js.bytes(s)` going out; a `Uint8Array` coming in; a Lua string either way) |
+| 7 | table: u32 n, n values (the array part 1..n), u32 m, m key/value pairs (the rest) |
+| 8 | error: u32 length, message (host to module only; status 1) |
+| 9 | token: u32 id (host to module only): a promise the host holds. Its settlement arrives later as one element of the list the reserved name `"\0poll"` returns — `{id, ok, value}` tables — the one name the host answers itself |
+
+The argument buffer is u32 count then the values; a result is one
+value. Limits, each refused with a stated reason: 16 MiB per buffer,
+64 levels of nesting (where a cycle ends up), and functions, userdata
+and threads, which do not cross. The reference encoder and decoder are
+in `src/onelua.c` (the module side) and `scripts/host.mjs` (the host
+side; `encodeValue`/`decodeValue` are exported for other hosts).
+
+**The reactor's Lua libraries.** `luaw_init` registers two things on
+its state that stock `lua.c` under `luaw_main` does not have: the `js`
+library (`js.call(name, ...)`, `js.bytes(s)`, the direct form
+`js.name(...)`, tokens with `:await()`, `:when(fn)` and `:settled()`,
+`js.poll()`), and a `require` that fetches by yield — a module not in
+the filesystem makes the resident program yield `"\0luaw:fetch:" ..
+name`; the host puts `name.lua` (dots as directories) into the
+filesystem and resumes with `"ok"`, or with a reason that `require`'s
+error carries. Both are Lua source embedded in `src/onelua.c` and
+installed by `luaw_openlibs(L)`, which a link-in consumer calls on its
+own state after `luaL_openlibs` (#68). `luaw_step` and `luaw_run`
+deliver settlements (a `"\0poll"` call) before running Lua, only while
+a token is pending, so a program that never touches a promise pays
+nothing per step. [`lua-js.md`](lua-js.md) describes the Lua-side API
+as a page author sees it.
 
 **Exports**: `memory`, `_initialize` (call once, first), the
 `__cpp_exception` tag (an artifact of the EH encoding; never caught by
@@ -224,6 +262,12 @@ catch stays in the protected-call entry points where
 - `brk` never moves, so musl's allocator is entirely on `mmap`; memory
   grows in 4 KiB pages and freed pages are reused but never returned to
   the engine (`memory.grow` only ever grows).
+- A poll that delivers tens of thousands of settlements at once is the
+  allocator's high-water case: the list is decoded while its buffer is
+  live, and linear memory grows by a few hundred KB per such batch,
+  decelerating over batches — not a leak (batches of 2,000 are flat
+  after a warm-up; the interface witness checks) but a peak a program
+  that fires 20,000 promises between steps will see.
 - A file position is 64-bit but a file lives in 32-bit memory: a write
   that would end beyond 2 GiB fails with `EFBIG` ("File too large"),
   where Linux would extend a sparse file. The interface witness holds

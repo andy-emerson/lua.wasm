@@ -27,7 +27,7 @@ const lua = await createLua(readFileSync(file), {
   stderr: s => { process.stderr.write(s); errText += s; },
 });
 const imports = lua.imports.join(',');
-if (imports !== 'luaw.now,luaw.read,luaw.write') { console.error(`FAIL: imports are [${imports}]`); process.exit(1); }
+if (imports !== 'luaw.call,luaw.now,luaw.read,luaw.write') { console.error(`FAIL: imports are [${imports}]`); process.exit(1); }
 
 let n = 0;
 for (const name of readdirSync(dir)) {

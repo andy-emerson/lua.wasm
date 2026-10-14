@@ -35,7 +35,7 @@ const trapOf = (f) => { try { f(); return null; } catch (e) { return e; } };
 console.log('imports and exports');
 {
   const lua = await fresh();
-  eq('the module imports exactly luaw.{now,read,write}', lua.imports, ['luaw.now', 'luaw.read', 'luaw.write']);
+  eq('the module imports exactly luaw.{call,now,read,write}', lua.imports, ['luaw.call', 'luaw.now', 'luaw.read', 'luaw.write']);
   /* the export list is the API: nothing of Lua's or the libc's leaks out
      (clang hides wasm symbols by default; --export-dynamic exports only
      what is marked default visibility) */
@@ -46,6 +46,150 @@ console.log('imports and exports');
       'function:luaw_init', 'function:luaw_last_error', 'function:luaw_main', 'function:luaw_message',
       'function:luaw_run', 'function:luaw_setenv', 'function:luaw_start', 'function:luaw_step',
       'memory:memory', 'tag:__cpp_exception']);
+}
+
+console.log('the bridge: values by copy through luaw.call');
+{
+  const lua = await fresh();
+  lua.init();
+  const seen = [];
+  lua.js.echo = (v) => v;
+  lua.js.add = (a, b) => a + b;
+  lua.js.record = (...args) => { seen.push(args); return args.length; };
+  lua.js.boom = () => { throw new Error('boom from JavaScript'); };
+  lua.js.bytes = (b) => b;
+  lua.js.big = (n) => 'x'.repeat(n);
+  lua.js.obj = () => ({ a: 1, b: [1, 2.5, 'three', null, true], c: { d: 'deep' } });
+  lua.js.map = () => new Map([[1, 'one'], ['k', 'v']]);
+  lua.js.promise = () => Promise.resolve(1);
+  lua.js.cycle = () => { const a = {}; a.self = a; return a; };
+  lua.js.fn = () => () => 1;
+  /* a Lua-side deep equality, printed per case, so each round trip is one line */
+  lua.run(`
+    local function same(a, b)
+      if type(a) ~= type(b) then return false end
+      if type(a) ~= "table" then
+        if a ~= a and b ~= b then return true end   -- NaN
+        return a == b and math.type(a) == math.type(b)
+      end
+      for k, v in pairs(a) do if not same(v, b[k]) then return false end end
+      for k in pairs(b) do if a[k] == nil then return false end end
+      return true
+    end
+    _G.same = same
+    local cases = { nil, false, true, 0, 1, -1, math.maxinteger, math.mininteger, 1.5, -0.0, 1/0, -1/0, 0/0,
+      "", "héllo", "with\\0nul", {}, {1, 2, 3}, {a = 1, b = "two"}, {1, 2, x = "mixed"}, {{{{"deep"}}}}, {[1.5] = "float key", [true] = "bool key"} }
+    local out = {}
+    for i = 1, 23 do
+      local v = cases[i]
+      local ok, r = pcall(js.call, "echo", v)
+      out[#out + 1] = tostring(ok and same(r, v))
+    end
+    print(table.concat(out, " "))
+  `);
+  eq('23 values round-trip unchanged (nil, booleans, integers at both limits, floats incl. -0, inf, nan, strings incl. NUL, tables: sequence, hash, mixed, nested, float and boolean keys)',
+     lua.take().stdout, ('true ').repeat(22) + 'true\n');
+  lua.run('print(js.call("add", 2, 3), js.call("add", 2.5, 1), js.call("add", "a", "b"), js.call("record", 1, nil, 3), js.call("record"))');
+  eq('arguments cross in order, nil included; results come back typed', [lua.take().stdout, seen], ['5\t3.5\tab\t3\t0\n', [[1, null, 3], []]]);
+  lua.run('local t = js.call("obj") print(t.a, #t.b, t.b[2], t.b[3], t.b[4], t.b[5], t.c.d) local m = js.call("map") print(m[1], m.k)');
+  eq('a JavaScript object arrives as a table, an Array as a sequence (null inside becomes nil), a Map by its keys', lua.take().stdout, '1\t5\t2.5\tthree\tnil\ttrue\tdeep\none\tv\n');
+  lua.run('local b = js.call("bytes", js.bytes("\\0\\255\\1")) print(#b, b:byte(1, 3)) print(#js.call("big", 1000000))');
+  eq('bytes cross as bytes both ways (js.bytes marks them); a 1 MB string crosses', lua.take().stdout, '3\t0\t255\t1\n1000000\n');
+  lua.run('print(pcall(js.call, "boom")) print(pcall(js.call, "nope")) print(pcall(js.call, {})) print(pcall(js.call, "echo", print)) print(pcall(js.call, "cycle")) print(pcall(js.call, "fn"))');
+  eq('a throwing function is a Lua error with its message; a missing name, a bad name, a function argument, a cycle and a function result are each refused with a stated reason', lua.take().stdout,
+     "false\tboom from JavaScript\n" +
+     "false\tno such function 'nope' (the host registered none by that name)\n" +
+     "false\tbad argument #1 to 'js.call' (string expected, got table)\n" +
+     "false\tvalue does not cross: function\n" +
+     "false\tvalue does not cross: nesting deeper than 64 (a cycle?)\n" +
+     "false\tvalue does not cross: function\n");
+  lua.run('local t = {} local c = t for i = 1, 70 do c.n = {} c = c.n end print(pcall(js.call, "echo", t))');
+  eq('a Lua table nested past 64 is refused on the way out', lua.take().stdout, 'false\tvalue does not cross: table nesting deeper than 64 (a cycle?)\n');
+  /* warm once (the allocator's steady state, Lua's string table), then
+     measure: a leak per call would show as growth; freed buffers do not */
+  lua.run('for i = 1, 20000 do js.call("echo", {i, "s", {i}}) end collectgarbage() collectgarbage()');
+  const before = lua.memory.buffer.byteLength;
+  lua.run('for i = 1, 20000 do js.call("echo", {i, "s", {i}}) end collectgarbage() collectgarbage()');
+  eq('20k more calls with table results do not grow linear memory (buffers are freed)', lua.memory.buffer.byteLength - before, 0);
+  eq('js is a global and package.preload has it too', (lua.run('print(type(js), type(js.call), type(package.preload.js))'), lua.take().stdout), 'table\tfunction\tfunction\n');
+  lua.run('print(js.add(40, 2), js.echo("direct"), rawget(js, "add") == js.add, pcall(js.nope))');
+  eq('the direct form js.name(...) is js.call("name", ...), made once; a missing name fails at the call', lua.take().stdout, "42\tdirect\ttrue\tfalse\tno such function 'nope' (the host registered none by that name)\n");
+}
+
+console.log('the bridge: tokens, await, when, poll');
+{
+  const lua = await fresh();
+  lua.init();
+  const resolvers = {};
+  lua.js.later = (name) => new Promise((resolve, reject) => { resolvers[name] = { resolve, reject }; });
+  lua.js.soon = (v) => Promise.resolve(v);
+  lua.js.unsendable = () => Promise.resolve(() => 1);
+  const tick = () => new Promise(r => setTimeout(r, 0));   // let settled promises run their callbacks
+  lua.run('t = js.soon({1, 2}) print(tostring(t):match("^js%.Token%(%d+%)$") ~= nil, t:settled(), pcall(t.await, t))');
+  eq('a promise arrives as a token: unsettled at once; await outside the resident program is refused with a stated reason', lua.take().stdout,
+     'true\tfalse\tfalse\tawait: only the resident program can wait for a token (use :when or js.poll)\n');
+  await tick();
+  eq('the settlement waits in the host until the next run or step', lua.pendingSettlements(), 1);
+  lua.run('print(t:settled())');
+  eq('the next run delivers it before running the chunk', lua.take().stdout, 'true\n');
+  lua.run('local ok, v = t:await() print(ok, v[1], v[2])');
+  eq('await on a settled token returns at once with ok and the value, from any chunk', lua.take().stdout, 'true\t1\t2\n');
+  /* a resident program: two tokens in flight, one awaited, one with a
+     continuation; the host settles them in the opposite order */
+  lua.start(`
+    local a, b = js.later("a"), js.later("b")
+    b:when(function (ok, v) print("b settled first:", ok, v) end)
+    coroutine.yield("waiting")
+    local ok, v = a:await()
+    print("a awaited:", ok, v.n)
+    local ok2, v2 = js.later("c"):await()
+    print("c awaited:", ok2, v2)
+    return "end"
+  `, '=tokens');
+  eq('start runs to the first yield', [lua.step(), lua.message()], [1, 'waiting']);
+  resolvers.b.resolve('B'); await tick();
+  eq('a step delivers b\'s settlement: its continuation runs on that step; a is still pending so the program yields again', [lua.step(), lua.take().stdout], [1, 'b settled first:\ttrue\tB\n']);
+  eq('steps without settlements just yield (await loops on the frame)', lua.step(), 1);
+  resolvers.a.resolve({ n: 1 }); await tick();
+  eq('a settles: await returns on the next step, and the program runs on to its next await', [lua.step(), lua.take().stdout], [1, 'a awaited:\ttrue\t1\n']);
+  resolvers.c.reject(new Error('c failed')); await tick();
+  eq('a rejection is ok=false with the message; the program finishes', [lua.step(), lua.take().stdout], [0, 'c awaited:\tfalse\tc failed\n']);
+  lua.run('u2 = js.unsendable()');
+  await tick();
+  lua.run('print(u2:await())');
+  eq('a settled value that cannot cross settles as an error', lua.take().stdout, 'false\tvalue does not cross: function\n');
+  lua.run('js.soon(1):when(function () error("in the continuation") end)');
+  await tick();
+  lua.run('print("ran")');
+  eq('an error in a when continuation is reported on stderr and does not stop the next chunk', lua.take(), { stdout: 'ran\n', stderr: 'js: error in a when continuation: (embedded):1: in the continuation\n' });
+  /* delivered entries are dropped on both sides: batches of tokens with
+     continuations leave linear memory flat once the allocator is warm
+     (a batch of 20k at once is the allocator's high-water case and
+     settles over more batches; 2k is the steady state) */
+  for (let i = 0; i < 3; i++) { lua.run('for i = 1, 2000 do js.soon(i):when(function () end) end'); await tick(); lua.run('collectgarbage() collectgarbage()'); }
+  const flat = lua.memory.buffer.byteLength;
+  for (let i = 0; i < 5; i++) { lua.run('for i = 1, 2000 do js.soon(i):when(function () end) end'); await tick(); lua.run('collectgarbage() collectgarbage()'); }
+  eq('10k more tokens with continuations, delivered, leave linear memory flat', lua.memory.buffer.byteLength - flat, 0);
+  /* the reactor's require: a module not in the filesystem is asked for
+     by yield; the host answers "ok" (after putting it in) or a reason */
+  lua.start('local ok, e = pcall(require, "missing.mod") print(ok, (e:gsub("^.-\\n\\t%(", "(")))');
+  eq('the resident program yields the fetch marker for a missing module', [lua.step(), lua.message()], [1, '\0luaw:fetch:missing.mod']);
+  eq('the host\'s reason comes back in require\'s error', [lua.step('not here'), lua.take().stdout], [0, 'false\t(not here)\n']);
+  lua.fs.put('/served.lua', 'return {served = true}');
+  lua.start('local t = require("served") print(t.served) local ok, e = pcall(require, "late") print(ok, e:match("only the resident program can") ~= nil)');
+  eq('a module in the filesystem loads without a fetch; the next missing one yields again (pcall is yieldable inside the program)',
+     [lua.step(), lua.take().stdout.split('\n')[0], lua.message()], [1, 'true', '\0luaw:fetch:late']);
+  eq('stock lua.c under luaw_main keeps stock require (no fetch, no hint)', (() => { const l = lua; l.setStdin(''); return l.main(['lua', '-e', 'local ok, e = pcall(require, "zz") print(ok, e:find("cannot fetch") == nil, e:find("no field package.preload") ~= nil)']); })(), 0);
+  eq('...and says so', lua.take().stdout, 'false\ttrue\ttrue\n');
+  lua.run('p1 = js.soon("p")');
+  await tick();
+  lua.run('print(p1:settled(), #js.poll())');
+  eq('the run delivered it before the chunk ran; js.poll by hand then finds nothing more', lua.take().stdout, 'true\t0\n');
+  lua.run('u = js.soon("q")');
+  await tick();
+  lua.start('local list = js.poll() print(#list, u:settled()) coroutine.yield() print(#js.poll(), list[1].ok, list[1].value, type(list[1].id))');
+  lua.step();
+  eq('inside the resident program the same holds: the step delivers, a hand poll after it is empty and the token is settled', lua.take().stdout, '0\ttrue\n');
 }
 
 console.log('init / run / errors');
