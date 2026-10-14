@@ -299,6 +299,93 @@ end to end with Lua computing and the page rendering — against Wasmoon
 and fengari, reported whichever way it falls. M5 is not done on
 ergonomics alone. The use-case table that framed D11 stays in #58.
 
+## The embedding principle (2026-10-14)
+
+Closed by the Human after M5, with love.wasm and tallydb in view as
+the two consumers that bring compiled code of their own. It settles
+what "Lua embeds on the web" means, which product serves which
+consumer, and why there are exactly three things in a release.
+
+**The standard.** Stock Lua embeds through its C API, and on the web
+that does not change. What the web adds is only where the OS went: a
+wasm module has no libc and no operating system, so the embedding
+carries them. The standard is therefore:
+
+1. stock Lua's C API, verbatim, witnessed by the official suite and
+   the differential;
+2. a libc and an OS inside the module — musl, the port, the in-memory
+   filesystem, the clock, `exit` — which the embedder links and does
+   not write;
+3. four imports the host supplies — `luaw.write`, `luaw.now`,
+   `luaw.read`, `luaw.call` — the whole surface between module and
+   host, documented with their signatures in `wasm.md`;
+4. Lua's errors on wasm exception handling through one unit the
+   embedder links, which defers to a real C++ runtime when the embedder
+   has one;
+5. optionally, `luaw_openlibs` for the `js` library and the fetching
+   `require`, and the `luaw_*` exports for a host that drives Lua from
+   JavaScript.
+
+It is reactor-shaped: the host calls `_initialize` and then the
+exports, and the module stays alive between calls, because a page
+cannot block and the frame model needs the module alive across
+frames. It carries things a given consumer does not need (a game
+engine needs no filesystem; a database needs no reactor) and that is
+accepted: it carries everything stock Lua has.
+
+**One build, three things, each made from the one before.**
+
+| what | form | for whom |
+|---|---|---|
+| the tarball | `liblua-wasm.a` (our five objects and musl's), the headers, the sources as a fallback for unusual defines, the link notes | a consumer with compiled code of its own (C, C++, Rust compiled to wasm32), who must link Lua into the same module as that code to call its C API |
+| `lua.wasm` | the archive linked with nothing added: the final link | consumers with no compiled code of their own, who drive Lua from outside; in this project that is `lua.js`, so `lua.wasm` is carried inside it and attached to the release as the certified module the witnesses ran on, not presented as a product |
+| `lua.js` | `lua.wasm` inside the loader | pages and JavaScript applications, in all four directions (Lua in HTML, Lua from JavaScript, JavaScript from Lua through `Lua.js`, HTML and JavaScript from Lua through the page's own `eval`/`html` registrations) |
+
+The archive is already compiled: a consumer compiles its own code and
+links, so every consumer runs the identical bytes the witnesses
+certified, which is what the source-drop arrangement could not give.
+`lua.wasm` is the one link a JavaScript consumer cannot do for itself,
+done once here. Nothing is built twice, so nothing drifts; one version
+is stamped on all three.
+
+**Acquisition, by use case.** A page author links `lua.js` from the
+project's site at a versioned path with an SRI hash, or downloads it
+beside the page. A JavaScript application vendors the same file and
+uses the `Lua` global (packaging gives it a DOM guard, `Lua.create()`
+and types so it serves Node and several VMs). A C, C++ or Rust
+program downloads the tarball from the release, points its toolchain
+at it as a sysroot (`--sysroot`, or Cargo's link search path), names
+one library, supplies the four imports from its host, and pins the
+version; the tarball's notes carry the link line in both forms, the
+four signatures, the reactor shape, the toolchain floor (clang and lld
+20, the standard EH encoding) and the C++ EH line.
+
+**Rejected, with reopen triggers.**
+
+- A command crt (`_start`, `main`): serves the WASI command-line
+  world, which neither Wasmoon nor fengari serve and native Lua serves
+  better; our modules would still need a host for the four imports.
+  Reopen if a consumer asks.
+- A wasmtime or other non-JavaScript runtime witness (#53, closed):
+  browsers and Node are the witnessed hosts and the target is the web.
+  Reopen if a consumer asks for such a host.
+- A partial link (`wasm-ld -r`) instead of the archive: the same one
+  flag for the consumer, less conventional, and indivisible.
+- `lua.wasm` as a product beside the other two: it is the final link
+  for one family of consumers, and that family is served by `lua.js`.
+- Lua compiled a second way (`MAKE_LIB`) for the tarball: the
+  artifact's own object serves every consumer once `lua.c`'s `main` no
+  longer collides with a consumer's; a second compile would be a
+  second product that could drift.
+- npm: not a second build (the release's own files uploaded by the
+  same workflow), deferred until the project's name is settled.
+- Loading the module through ESM source phase imports in `lua.js` or
+  `host.mjs`: the user's two lines would not change; take it when the
+  three engines ship it unflagged and the common bundlers resolve it.
+- Wasm dynamic linking (the C API exported across a module boundary so
+  a consumer could add code to a finished `lua.wasm`): a different and
+  much larger project; not pursued.
+
 ## What this does not change
 
 Lua stays verbatim 5.4.8 (`scripts/verify-stock.sh`). Error handling
