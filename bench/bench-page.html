@@ -4,6 +4,12 @@
      interface -- window.__bench.newVM() gives a fresh instance with
      run(source) -> {ms, output} -- so scripts/bench-witness.mjs can time
      the same workloads on each from the same page under the same engine.
+     The bridge workloads (bench/bridge_*.lua) call a `bridge` table of
+     page functions (add, sum, render) that each implementation registers
+     in its own idiom -- ours through Lua.js by copy, Wasmoon through
+     global.set with its table conversion, fengari through js.global and
+     its value wrappers -- and bridge_in is driven from the page: drive(n)
+     hands Lua n strings the implementation's own way.
      print output is captured through console.log for all three (Wasmoon
      and fengari print there; ours is pointed there), so the harness can
      also check that every implementation printed the same result. -->
@@ -30,8 +36,25 @@
       window.__bench.newVM = async () => {
         const lua = await createLua(module, { stdout: t => window.__out.push(t), stderr: t => window.__out.push('stderr: ' + t) });
         if (lua.init() !== 0) throw new Error('luaw_init failed');
+        /* the bridge: functions by name, values by copy (arrays arrive as Arrays) */
+        const buf = new Float64Array(4000);
+        lua.js.add = (a, b) => a + b;
+        lua.js.sum = (t, n) => { let s = 0; for (let i = 0; i < n; i++) s += t[i]; return s; };
+        lua.js.render = (xs, ys, n) => { let s = 0; for (let i = 0; i < n; i++) { buf[2 * i] = xs[i]; buf[2 * i + 1] = ys[i]; s += xs[i] + ys[i]; } return s; };
+        if (lua.run('bridge = js') !== 0) throw new Error(lua.lastError());
+        const run = (src) => { const t0 = performance.now(); const r = lua.run(src, '=bench'); const ms = performance.now() - t0; if (r !== 0) throw new Error(lua.lastError()); return ms; };
         return {
-          run: (src) => { const t0 = performance.now(); const r = lua.run(src, '=bench'); const ms = performance.now() - t0; if (r !== 0) throw new Error(lua.lastError()); return ms; },
+          run,
+          /* the other way: the resident program is resumed with a message per step */
+          drive: (src, n, msg) => {
+            if (lua.run(src, '=bench') !== 0) throw new Error(lua.lastError());
+            const t0 = performance.now();
+            if (lua.start('local m = coroutine.yield() while m do handle(m) m = coroutine.yield() end finish()') !== 0) throw new Error(lua.lastError());
+            lua.step();
+            for (let i = 0; i < n; i++) lua.step(msg);
+            lua.step();
+            return performance.now() - t0;
+          },
           close: () => {},
         };
       };
@@ -40,8 +63,24 @@
       const factory = new wasmoon.LuaFactory('/vendor/wasmoon/glue.wasm');
       window.__bench.newVM = async () => {
         const engine = await factory.createEngine();
+        /* the bridge: a JS object set as a global; Wasmoon converts Lua tables to arrays on the way in */
+        const buf = new Float64Array(4000);
+        engine.global.set('bridge', {
+          add: (a, b) => a + b,
+          sum: (t, n) => { let s = 0; for (let i = 0; i < n; i++) s += t[i]; return s; },
+          render: (xs, ys, n) => { let s = 0; for (let i = 0; i < n; i++) { buf[2 * i] = xs[i]; buf[2 * i + 1] = ys[i]; s += xs[i] + ys[i]; } return s; },
+        });
         return {
           run: async (src) => { const t0 = performance.now(); await engine.doString(src); return performance.now() - t0; },
+          /* the other way: a Lua global got once and called as a JS function */
+          drive: async (src, n, msg) => {
+            await engine.doString(src);
+            const t0 = performance.now();
+            const handle = engine.global.get('handle');
+            for (let i = 0; i < n; i++) handle(msg);
+            engine.global.get('finish')();
+            return performance.now() - t0;
+          },
           close: () => engine.global.close(),
         };
       };
@@ -51,11 +90,33 @@
       window.__bench.newVM = async () => {
         const L = lauxlib.luaL_newstate();
         lualib.luaL_openlibs(L);
+        lauxlib.luaL_requiref(L, to_luastring('js'), fengari.interop.luaopen_js, 1); lua.lua_pop(L, 1);   // as fengari-web's own tag runner does
+        const run = (src) => {
+          const t0 = performance.now();
+          if (lauxlib.luaL_loadstring(L, to_luastring(src)) !== lua.LUA_OK) throw new Error(to_jsstring(lua.lua_tostring(L, -1)));
+          if (lua.lua_pcall(L, 0, 0, 0) !== lua.LUA_OK) throw new Error(to_jsstring(lua.lua_tostring(L, -1)));
+          return performance.now() - t0;
+        };
+        /* the bridge: JS globals reached through fengari-interop's js.global;
+           a Lua table arrives in JS as a value wrapper read with get(key) */
+        const buf = new Float64Array(4000);
+        window.bridge_add = (a, b) => a + b;
+        window.bridge_sum = (t, n) => { let s = 0; for (let i = 1; i <= n; i++) s += t.get(i); return s; };
+        window.bridge_render = (xs, ys, n) => { let s = 0; for (let i = 1; i <= n; i++) { const x = xs.get(i), y = ys.get(i); buf[2 * i - 2] = x; buf[2 * i - 1] = y; s += x + y; } return s; };
+        run('local js = require "js" local g = js.global bridge = { add = function (a, b) return g:bridge_add(a, b) end, sum = function (t, n) return g:bridge_sum(t, n) end, render = function (xs, ys, n) return g:bridge_render(xs, ys, n) end }');
         return {
-          run: (src) => {
+          run,
+          /* the other way: the Lua global as a JS function through the interop's
+             tojs; a Lua function called from JS receives JS's `this` first, so
+             the idiom is a (self, m) adapter */
+          drive: (src, n, msg) => {
+            run(src);
+            run('__handle = function (_, m) handle(m) end');
             const t0 = performance.now();
-            if (lauxlib.luaL_loadstring(L, to_luastring(src)) !== lua.LUA_OK) throw new Error(to_jsstring(lua.lua_tostring(L, -1)));
-            if (lua.lua_pcall(L, 0, 0, 0) !== lua.LUA_OK) throw new Error(to_jsstring(lua.lua_tostring(L, -1)));
+            lua.lua_getglobal(L, to_luastring('__handle'));
+            const handle = fengari.interop.tojs(L, -1); lua.lua_pop(L, 1);
+            for (let i = 0; i < n; i++) handle(msg);
+            run('finish()');
             return performance.now() - t0;
           },
           close: () => lua.lua_close(L),

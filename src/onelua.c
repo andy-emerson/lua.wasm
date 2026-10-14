@@ -230,6 +230,7 @@ enum { LUAW_T_NIL, LUAW_T_FALSE, LUAW_T_TRUE, LUAW_T_INT, LUAW_T_FLOAT,
 
 static const char *const LUAW_TOKEN_MT = "js.Token";
 static const char *const LUAW_DISPATCH = "luaw.dispatch";
+static lua_Integer luaw_tokens_pending = 0;   /* issued and not yet delivered: when 0, a step skips the poll */
 
 typedef struct { unsigned char *data; size_t len, cap; lua_State *L; } luaw_buf;
 
@@ -390,6 +391,7 @@ static void luaw_dec_value (lua_State *L, const unsigned char **p, const unsigne
     }
     case LUAW_T_TOKEN: {
       uint32_t id = luaw_dec_u32(L, p, end);
+      luaw_tokens_pending++;
       lua_createtable(L, 0, 1);
       lua_pushinteger(L, (lua_Integer)id);
       lua_setfield(L, -2, "id");
@@ -542,15 +544,20 @@ static int luaw_open_js (lua_State *L) {
 }
 
 /* deliver settlements before running Lua: js.poll under a protected
-   call; an error in a when continuation is reported, not raised */
+   call; an error in a when continuation is reported, not raised. A
+   program that holds no undelivered token pays nothing: the poll (an
+   import call) is skipped until a token is issued. */
 static void luaw_dispatch (lua_State *L) {
+  if (luaw_tokens_pending <= 0) return;
   lua_getfield(L, LUA_REGISTRYINDEX, LUAW_DISPATCH);
   if (lua_isfunction(L, -1)) {
-    if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+    if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
       const char *msg = lua_tostring(L, -1);
       lua_writestringerror("js: error in a when continuation: %s\n", msg ? msg : "(not a string)");
-      lua_pop(L, 1);
     }
+    else if (lua_istable(L, -1))
+      luaw_tokens_pending -= (lua_Integer)lua_rawlen(L, -1);
+    lua_pop(L, 1);
   }
   else lua_pop(L, 1);
 }
