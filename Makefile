@@ -16,8 +16,8 @@ $(PLATS) clean:
 # port/luaw-eh.cpp, which rides wasm exception handling (a bundled
 # catch(...)-only micro-runtime; no libc++abi), on upstream musl (third_party/musl, verbatim; built for wasm32 by
 # port/musl.mk) with the OS under it in port/ (luaw-sys.c, luaw-fs.c).
-# The module imports exactly three functions -- luaw.write, luaw.now,
-# luaw.read -- and runs in any current browser from a plain page, in
+# The module imports exactly four functions -- luaw.write, luaw.now,
+# luaw.read, luaw.call -- and runs in any current browser from a plain page, in
 # Node >= 24.15, or in any wasm runtime with the standard exception-
 # handling encoding. Design: doc/history/browser-native-2026-10-13.md;
 # contract and witnesses: doc/wasm.md.

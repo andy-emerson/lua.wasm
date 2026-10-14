@@ -59,8 +59,9 @@ error messages byte for byte (the witness compares them with native
 Lua). Two limits: a `require` called from inside a C function (a
 `table.sort` comparator, a `string.gsub` callback) cannot pause to
 fetch and fails with the stock "module not found" message plus a hint
-to list the module in `data-files`; and a fetch that fails appends its
-reason to that message. Data files are never fetched implicitly: list
+(put the module in the filesystem first: in a page, list it in
+`data-files`); and a fetch that fails appends its reason to that
+message. Data files are never fetched implicitly: list
 them in `data-files`.
 
 **Animation and long programs.** Every tag runs as the module's
@@ -113,16 +114,82 @@ console (its terminal), not to the page, unless redirected.
 | `Lua.on('print', fn)` / `Lua.on('error', fn)` | where output and errors of JavaScript calls go; `null` restores the console |
 | `Lua.exitCode` | after `os.exit`: its status; `Lua.run`, `start`, `step`, `files.*` and `env` throw `VM exited (status N)` from then on |
 
-A program driven from JavaScript talks to the page through the message
-channel — a string each way per step — and nothing else: there is no
-object bridge, no calling JavaScript from Lua. That is the next
-milestone ([#58](https://github.com/andy-emerson/lua.wasm/issues/58)).
+| `Lua.js` | the bridge's table: `Lua.js.name = fn` is `js.name(...)` in Lua (below); usable before `ready` |
+
+## The bridge: `Lua.js` and `js`
+
+The page registers functions by assigning them into `Lua.js`; Lua
+calls them as `js.name(...)`. Nothing else on the page is reachable
+from Lua, and values cross **by copy** — never by reference:
+
+| crosses | as |
+|---|---|
+| `nil`, booleans | `null`/`undefined`, booleans |
+| integers, floats | numbers; an integer beyond 2^53 is a `BigInt`; a JavaScript integer-valued number is a Lua integer, other numbers are floats |
+| strings | strings (UTF-8); `js.bytes(s)` sends a string as a `Uint8Array`; a `Uint8Array` (or any buffer) arrives as a Lua string |
+| tables | a sequence is an `Array` (a `null` inside ends the sequence on the way back); other keys make a plain object when every key is a string, else a `Map`; the 1-based array part joins the `Map` under its numbers |
+| a promise (from JavaScript) | a **token** (below) |
+| functions, DOM nodes, class instances, cycles | do not cross: a Lua error says why (`value does not cross: function`) |
+
+A call is synchronous and returns the function's one result. A
+function that throws is a Lua error carrying the exception's message.
+A name nobody registered fails at the call: `no such function 'x'`.
+One call carries at most 16 MiB and 64 levels of nesting.
+
+**Promises and tokens.** A function that returns a promise hands Lua a
+token at once. The token is a small table:
+
+```lua
+local t = js.fetchText("a.txt")       -- a token; the request is in flight
+t:when(function (ok, v) ... end)      -- run this when it settles
+local ok, v = t:await()               -- or wait for it: ok is false on rejection, v the message
+print(t:settled())                    -- true once the outcome has arrived
+```
+
+`await` yields the resident program to the page and resumes on the
+frame after the promise settles; several tokens can be in flight. It
+only works inside a tag's program (or `Lua.start`'s): from a `Lua.run`
+chunk, use `:when` — the continuation runs on the next `Lua.run` or
+`Lua.step`, since the module never runs on its own. `js.poll()` is the
+primitive both are built on: it returns the settlements delivered since
+the last call, and a program that wants to own its loop can use it
+directly. An error inside a `when` continuation goes to the console
+(`js: error in a when continuation: ...`) and does not stop the program.
+Fire-and-forget calls should use `:when`, or the outcome is kept until
+someone asks for it.
+
+**Built in**, replaceable by assigning over them: `js.log(...)`
+(`console.log`), `js.now()` (ms since the epoch), `js.fetch(url)` (a
+token: the body as bytes, or an error naming the URL and status).
+
+```html
+<script src="lua.js"></script>
+<script>
+  Lua.js.add = (a, b) => a + b;
+  Lua.js.pick = (list) => list[Math.floor(Math.random() * list.length)];
+  Lua.js.later = (v, ms) => new Promise(r => setTimeout(() => r(v), ms));
+</script>
+<script type="text/lua">
+  print(js.add(2, 3), js.pick({"a", "b", "c"}))
+  local a, b = js.later("a", 40), js.later("b", 1)     -- both in flight
+  b:when(function (ok, v) print("b first:", v) end)
+  print("a:", select(2, a:await()))
+</script>
+```
+
+Why by copy, in one sentence: a proxy-and-handle bridge spends what
+wasm is good at (isolation, deterministic memory, predictable speed) on
+per-property boundary crossings and garbage-collector entanglement on
+both sides; copy-across keeps them, and a frame's worth of work crosses
+as one table. The decision, its alternatives and its reopen trigger are
+in [`history/browser-native-2026-10-13.md`](history/browser-native-2026-10-13.md) (D11).
 
 ```html
 <script src="lua.js"></script>
 <script>
   Lua.ready.then(async () => {
     Lua.run('print(2^10)');                         // console: 1024.0
+    Lua.js.title = (t) => { document.title = t; };  // callable from any later chunk as js.title(...)
     Lua.start('local n = 0 while true do n = n + 1 coroutine.yield(n) end');
     const tick = async () => { await Lua.step(); document.title = Lua.message; requestAnimationFrame(tick); };
     tick();
@@ -141,4 +208,6 @@ behaviour above (`scripts/browser/pages/`) in a real engine from a
 plain static server — and one page as `file://` — and asserts on the
 output elements, the error elements and the console; the time page
 runs under three zones (New York, Kolkata, Sydney) against `Intl` as
-the oracle. CI runs it in all three engines on every change.
+the oracle; the bridge page covers the table above, two promises in
+flight, `when`, `await`, the built-ins and the error rule. CI runs it
+in all three engines on every change.
