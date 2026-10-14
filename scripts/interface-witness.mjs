@@ -170,6 +170,17 @@ console.log('the bridge: tokens, await, when, poll');
   const flat = lua.memory.buffer.byteLength;
   for (let i = 0; i < 5; i++) { lua.run('for i = 1, 2000 do js.soon(i):when(function () end) end'); await tick(); lua.run('collectgarbage() collectgarbage()'); }
   eq('10k more tokens with continuations, delivered, leave linear memory flat', lua.memory.buffer.byteLength - flat, 0);
+  /* the reactor's require: a module not in the filesystem is asked for
+     by yield; the host answers "ok" (after putting it in) or a reason */
+  lua.start('local ok, e = pcall(require, "missing.mod") print(ok, (e:gsub("^.-\\n\\t%(", "(")))');
+  eq('the resident program yields the fetch marker for a missing module', [lua.step(), lua.message()], [1, '\0luaw:fetch:missing.mod']);
+  eq('the host\'s reason comes back in require\'s error', [lua.step('not here'), lua.take().stdout], [0, 'false\t(not here)\n']);
+  lua.fs.put('/served.lua', 'return {served = true}');
+  lua.start('local t = require("served") print(t.served) local ok, e = pcall(require, "late") print(ok, e:match("only the resident program can") ~= nil)');
+  eq('a module in the filesystem loads without a fetch; the next missing one yields again (pcall is yieldable inside the program)',
+     [lua.step(), lua.take().stdout.split('\n')[0], lua.message()], [1, 'true', '\0luaw:fetch:late']);
+  eq('stock lua.c under luaw_main keeps stock require (no fetch, no hint)', (() => { const l = lua; l.setStdin(''); return l.main(['lua', '-e', 'local ok, e = pcall(require, "zz") print(ok, e:find("cannot fetch") == nil, e:find("no field package.preload") ~= nil)']); })(), 0);
+  eq('...and says so', lua.take().stdout, 'false\ttrue\ttrue\n');
   lua.run('p1 = js.soon("p")');
   await tick();
   lua.run('print(p1:settled(), #js.poll())');

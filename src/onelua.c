@@ -555,8 +555,73 @@ static void luaw_dispatch (lua_State *L) {
   else lua_pop(L, 1);
 }
 
-/* register the js library on any state: luaw_init calls this; a
-   link-in consumer calls it on its own state after luaL_openlibs */
+/* require for a reactor host (D8 row 4): a module that is not in the
+   filesystem is fetched by yielding to the host -- the resident program
+   yields "\0luaw:fetch:" .. name, the host puts name.lua (dots as
+   directories) into the filesystem and resumes with "ok" or with a
+   reason, which the error carries in parentheses. The search and the
+   load are done in Lua rather than through the C require, whose
+   lua_call boundary would stop a module's own require from yielding.
+   What a program sees is require's contract: package.preload,
+   package.path, one load per name, package.loaded, the loader's two
+   results, and stock's error texts byte for byte (asserted against
+   native lua by lua.js's files page). Installed on the reactor state
+   only: stock lua.c under luaw_main keeps stock require. */
+static const char luaw_require_source[] =
+  "local loaded, preload, searchpath = package.loaded, package.preload, package.searchpath\n"
+  "local function load_from(name, path)\n"
+  "  local f, err = loadfile(path)\n"
+  "  -- level 0: stock raises this from inside the C searcher, so it carries no position\n"
+  "  if not f then error(\"error loading module '\" .. name .. \"' from file '\" .. path .. \"':\\n\\t\" .. err, 0) end\n"
+  "  local r = f(name, path)\n"
+  "  if r ~= nil then loaded[name] = r end\n"
+  "  if loaded[name] == nil then loaded[name] = true end\n"
+  "  return loaded[name], path\n"
+  "end\n"
+  "-- the \"no file\" lines stock require lists after the preload field,\n"
+  "-- each searcher's list behind its own newline and tab: package.path,\n"
+  "-- then package.cpath, then (for a dotted name) the all-in-one\n"
+  "-- loader's search of cpath for the root name\n"
+  "local function notfound(name)\n"
+  "  local _, err = searchpath(name, package.path)\n"
+  "  local _, cerr = searchpath(name, package.cpath)\n"
+  "  local msg = \"module '\" .. name .. \"' not found:\\n\\tno field package.preload['\" .. name .. \"']\\n\\t\" .. err .. \"\\n\\t\" .. cerr\n"
+  "  local root = name:match(\"^([^.]+)%.\")\n"
+  "  if root then msg = msg .. \"\\n\\t\" .. select(2, searchpath(root, package.cpath)) end\n"
+  "  return msg\n"
+  "end\n"
+  "function require(...)\n"
+  "  local name = ...\n"
+  "  local t = type(name)\n"
+  "  if t == \"number\" then name = tostring(name)\n"
+  "  elseif t ~= \"string\" then\n"
+  "    error(\"bad argument #1 to 'require' (string expected, got \" .. (select(\"#\", ...) == 0 and \"no value\" or t) .. \")\", 2)\n"
+  "  end\n"
+  "  local v = loaded[name]\n"
+  "  if v then return v end\n"
+  "  local pre = preload[name]\n"
+  "  if pre then\n"
+  "    local r = pre(name, \":preload:\")\n"
+  "    if r ~= nil then loaded[name] = r end\n"
+  "    if loaded[name] == nil then loaded[name] = true end\n"
+  "    return loaded[name], \":preload:\"\n"
+  "  end\n"
+  "  local path, err = searchpath(name, package.path)\n"
+  "  if path then return load_from(name, path) end\n"
+  "  local msg = notfound(name)\n"
+  "  if not coroutine.isyieldable() then\n"
+  "    error(msg .. \"\\n\\t(cannot fetch from here: only the resident program can; put the module in the filesystem first)\", 2)\n"
+  "  end\n"
+  "  local answer = coroutine.yield(\"\\0luaw:fetch:\" .. name)\n"
+  "  if answer ~= \"ok\" then error(msg .. \"\\n\\t(\" .. tostring(answer) .. \")\", 2) end\n"
+  "  path = searchpath(name, package.path)\n"
+  "  if not path then error(msg, 2) end\n"
+  "  return load_from(name, path)\n"
+  "end\n";
+
+/* register the js library and the reactor's require on any state:
+   luaw_init calls this; a link-in consumer calls it on its own state
+   after luaL_openlibs */
 void luaw_openlibs (lua_State *L) {
   luaL_getsubtable(L, LUA_REGISTRYINDEX, LUA_PRELOAD_TABLE);
   lua_pushcfunction(L, luaw_open_js);
@@ -565,6 +630,12 @@ void luaw_openlibs (lua_State *L) {
   /* and make it a global, as the standard libraries are */
   luaL_requiref(L, "js", luaw_open_js, 1);
   lua_pop(L, 1);
+  /* the reactor's require (fetch by yield) */
+  if (luaL_loadbuffer(L, luaw_require_source, sizeof(luaw_require_source) - 1, "=require") != LUA_OK
+      || lua_pcall(L, 0, 0, 0) != LUA_OK) {
+    lua_writestringerror("luaw: the require shim did not install: %s\n", lua_tostring(L, -1));
+    lua_pop(L, 1);
+  }
 }
 
 #endif /* __wasm__ */

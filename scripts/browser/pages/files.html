@@ -13,7 +13,7 @@
   print(require("util") == package.loaded.util, select("#", require("util")))
   -- cannot yield from a C callback: the stock error, with the hint
   local ok, err = pcall(table.sort, {3, 1, 2}, function (a, b) require "late" return a < b end)
-  print(ok, err:match("module 'late' not found") ~= nil, err:match("list it in data%-files") ~= nil)
+  print(ok, err:match("module 'late' not found") ~= nil, err:match("only the resident program can") ~= nil)
   -- a module that is not there: the stock message (path, cpath, and the
   -- root-name cpath line for a dotted name) plus the fetch result
   print(pcall(require, "missing"))
