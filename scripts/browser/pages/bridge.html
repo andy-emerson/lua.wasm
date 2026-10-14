@@ -1,0 +1,51 @@
+<!doctype html>
+<!-- D11: the bridge. The page assigns functions into Lua.js before the
+     tags run; Lua calls them as js.name(...) with values crossing by
+     copy; a promise is a token awaited or watched; an exception is a
+     Lua error; the built-ins log, now and fetch; a function added after
+     ready is callable from a Lua.run chunk. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>bridge</title><script src="/lua.js"></script>
+<script>
+  Lua.js.add = (a, b) => a + b;
+  Lua.js.boom = () => { throw new Error('no'); };
+  Lua.js.slow = (v, ms) => new Promise(r => setTimeout(() => r(v), ms));
+  Lua.js.shape = (t) => ({ sum: t.a + t.b, list: [t.a, t.b, null], text: 'héllo', bytes: new Uint8Array([0, 255]) });
+  Lua.js.big = (n) => BigInt(n) * 1000n;   // 9007199254740993000 fits int64; beyond that wraps, as documented
+</script>
+</head>
+<body>
+<script type="text/lua">
+  print(js.add(2, 3), js.add("a", "b"))
+  print(pcall(js.boom))
+  print(pcall(js.nope))
+  local r = js.shape({a = 1, b = 2})
+  print(r.sum, #r.list, r.list[3], r.text, #r.bytes, r.bytes:byte(2))
+  print(js.big(9007199254740993), math.type(js.big(2)))
+  -- two promises in flight, settled in the opposite order
+  local a, b = js.slow("a", 40), js.slow("b", 1)
+  b:when(function (ok, v) print("b first", ok, v) end)
+  print("a", a:await())
+  -- the fetch built-in: bytes, or an error naming the URL and status
+  local ok, bytes = js.fetch("/pages/data/levels.json"):await()
+  print(ok, bytes)
+  print(js.fetch("/pages/nope.json"):await())
+  print(math.type(js.now()))
+  js.log("to the console", 42)
+</script>
+<script>
+  window.__bridge = { done: false };
+  Lua.ready.then(() => {
+    const r = window.__bridge;
+    Lua.js.late = (s) => s + '!';
+    const got = [];
+    Lua.on('print', t => got.push(t));
+    Lua.run('print(js.late("late"))');
+    Lua.on('print', null);
+    r.late = got.join('');
+    try { Lua.run('js.slow(1, 1):await()'); r.awaitFromRun = 'ran'; } catch (e) { r.awaitFromRun = e.message; }
+    r.done = true;
+  }).catch(e => { window.__bridge.err = e.message; window.__bridge.done = true; });
+</script>
+</body>
+</html>

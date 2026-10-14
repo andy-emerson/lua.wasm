@@ -8,7 +8,7 @@
 //
 //   const lua = await createLua(moduleOrBytes, { stdout, stderr, stdin, now });
 //   lua.init(); lua.run('print(1)');
-//   lua.js.add = (a, b) => a + b;        // Lua: js.call("add", 1, 2) -> 3
+//   lua.js.add = (a, b) => a + b;        // Lua: js.add(1, 2) -> 3
 //
 // The bridge (D11): lua.js is the table of functions Lua may call by
 // name through the luaw.call import, and nothing else on this side is
@@ -155,7 +155,7 @@ export async function createLua(source, opts = {}) {
   let stdin = typeof opts.stdin === 'string' ? enc.encode(opts.stdin) : (opts.stdin ?? new Uint8Array());
   let prompt = opts.prompt ?? null;   // () => string | null, asked when stdin is empty
   let memory;
-  const fns = Object.create(null);   // lua.js: what Lua may call, by name
+  const fns = opts.js ?? Object.create(null);   // lua.js: what Lua may call, by name (a host may pass its own table, filled before or after)
   let nextToken = 1;
   const settled = [];                // [{id, ok, value: Encoded}] since the last poll
   const isThenable = (v) => v !== null && typeof v === 'object' && typeof v.then === 'function';

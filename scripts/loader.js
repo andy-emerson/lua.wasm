@@ -368,6 +368,7 @@
     const lua = await createLua(module, {
       stdout: t => state.sink && state.sink.print(t),
       stderr: t => state.sink && state.sink.error(t),
+      js: jsTable,                     // Lua.js: filled by the page before or after boot
     });
     state.lua = lua;
     const r = lua.init();
@@ -388,6 +389,24 @@
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go);
     else go();
   });
+
+  // --- the bridge (D11): Lua.js, mirrored as js in Lua -------------------------
+  // The page assigns functions into Lua.js by name (Lua.js.add = fn) and
+  // Lua calls them as js.add(...); nothing else on this side is reachable.
+  // Values cross by copy (host.mjs documents the mapping); a promise comes
+  // back to Lua as a token (t:await(), t:when(fn)); an exception is a Lua
+  // error with its message. Three built-ins with no object identity are
+  // filled in here and can be replaced: log (console.log), now (ms since
+  // the epoch), fetch (the response body as bytes, or an error naming the
+  // URL and status).
+  const jsTable = Object.create(null);
+  jsTable.log = (...args) => console.log(...args);
+  jsTable.now = () => Date.now();
+  jsTable.fetch = async (url, init) => {
+    const r = await fetch(url, init);
+    if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
+    return new Uint8Array(await r.arrayBuffer());
+  };
 
   // --- the JavaScript surface (D8 row 11): the module's own contract ----------
   // A call from JavaScript is started from JavaScript, so its terminal is
@@ -419,6 +438,8 @@
   window.Lua = {
     /* resolves (with Lua) once lua.wasm is loaded, the VM exists and the page's tags have run */
     ready: ready.then(() => window.Lua),
+    /* the bridge's table: Lua.js.name = fn is js.name(...) in Lua (usable before ready) */
+    js: jsTable,
     /* run a chunk to completion; throws with the Lua message on error */
     run: (source, name = '=(JavaScript)') => guarded(lua => { if (lua.run(source, name) !== 0) fail(lua); }),
     /* the resident program: start it, then step it (once per frame); step
