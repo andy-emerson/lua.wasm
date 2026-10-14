@@ -74,18 +74,30 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: toolchain (zig = clang 20.1.2 and the musl build's compiler; binaryen for wasm-opt)
-        run: python3 -m pip install 'ziglang==0.15.1' && npm i --no-save binaryen@132.0.0
+      - name: toolchain (zig = clang 20.1.2 and the musl build's compiler; LLVM's wasm32 builtins for the link, port/musl.mk; binaryen for wasm-opt)
+        run: |
+          python3 -m pip install 'ziglang==0.15.1' && npm i --no-save binaryen@132.0.0
+          sudo apt-get install -y libclang-rt-18-dev-wasm32
       - name: the libc alone -- smoke (printf/strtod exactness, errno, locale, stdin) and allocator stress
         run: >
           make libc-smoke libc-stress
           WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar"
+          MUSL_RTLIB=/usr/lib/llvm-18/lib/clang/18/lib/wasi/libclang_rt.builtins-wasm32.a
       - name: build lua.wasm (release form) and print its size
         run: >
           make wasm
           WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar"
           WASM_CLANGXX="python3 -m ziglang c++"
           WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling"
+          MUSL_RTLIB=/usr/lib/llvm-18/lib/clang/18/lib/wasi/libclang_rt.builtins-wasm32.a
+          WASM_OPT=node_modules/binaryen/bin/wasm-opt
+      - name: the tarball (make sdk), and lua.wasm relinked from it alone is byte-identical
+        run: >
+          make sdk-check
+          WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar"
+          WASM_CLANGXX="python3 -m ziglang c++"
+          WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling"
+          MUSL_RTLIB=/usr/lib/llvm-18/lib/clang/18/lib/wasi/libclang_rt.builtins-wasm32.a
           WASM_OPT=node_modules/binaryen/bin/wasm-opt
       - name: host-interface witness (imports, exports, exit, messages, adversarial battery)
         run: node scripts/interface-witness.mjs lua.wasm
@@ -99,6 +111,7 @@ jobs:
           WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar"
           WASM_CLANGXX="python3 -m ziglang c++"
           WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling"
+          MUSL_RTLIB=/usr/lib/llvm-18/lib/clang/18/lib/wasi/libclang_rt.builtins-wasm32.a
           WASM_OPT=node_modules/binaryen/bin/wasm-opt
       - name: build lua.js (lua.wasm inlined) and print its size
         run: make lua-js WASM_OPT=node_modules/binaryen/bin/wasm-opt

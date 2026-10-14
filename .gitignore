@@ -12,3 +12,4 @@ src/luac
 build/
 node_modules/
 tests/time.txt
+lua-wasm-sdk-*.tar.gz

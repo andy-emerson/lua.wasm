@@ -163,13 +163,16 @@ console.log('the bridge: tokens, await, when, poll');
   lua.run('print("ran")');
   eq('an error in a when continuation is reported on stderr and does not stop the next chunk', lua.take(), { stdout: 'ran\n', stderr: 'js: error in a when continuation: (embedded):1: in the continuation\n' });
   /* delivered entries are dropped on both sides: batches of tokens with
-     continuations leave linear memory flat once the allocator is warm
-     (a batch of 20k at once is the allocator's high-water case and
-     settles over more batches; 2k is the steady state) */
-  for (let i = 0; i < 3; i++) { lua.run('for i = 1, 2000 do js.soon(i):when(function () end) end'); await tick(); lua.run('collectgarbage() collectgarbage()'); }
+     continuations do not accumulate. The allocator's high-water mark
+     climbs two pages over the first ~25k tokens and then holds (probed
+     to 160k); which batch each step lands on depends on the module's
+     data layout, so the check warms past that and bounds the rest at
+     one page, where a leak of even 16 bytes per token would be ten */
+  for (let i = 0; i < 15; i++) { lua.run('for i = 1, 2000 do js.soon(i):when(function () end) end'); await tick(); lua.run('collectgarbage() collectgarbage()'); }
   const flat = lua.memory.buffer.byteLength;
-  for (let i = 0; i < 5; i++) { lua.run('for i = 1, 2000 do js.soon(i):when(function () end) end'); await tick(); lua.run('collectgarbage() collectgarbage()'); }
-  eq('10k more tokens with continuations, delivered, leave linear memory flat', lua.memory.buffer.byteLength - flat, 0);
+  for (let i = 0; i < 20; i++) { lua.run('for i = 1, 2000 do js.soon(i):when(function () end) end'); await tick(); lua.run('collectgarbage() collectgarbage()'); }
+  check('40k more tokens with continuations, delivered, grow linear memory by at most one page (a 16-byte-per-token leak would be ten)',
+        lua.memory.buffer.byteLength - flat <= 65536, `grew ${lua.memory.buffer.byteLength - flat} bytes`);
   /* the reactor's require: a module not in the filesystem is asked for
      by yield; the host answers "ok" (after putting it in) or a reason */
   lua.start('local ok, e = pcall(require, "missing.mod") print(ok, (e:gsub("^.-\\n\\t%(", "(")))');

@@ -22,12 +22,14 @@ $(PLATS) clean:
 # the web, D9). Design: doc/history/browser-native-2026-10-13.md;
 # contract and witnesses: doc/wasm.md.
 #
-# Toolchain: clang 20+ (the standard EH encoding) with its wasm32
+# Toolchain: clang 20+ (the standard EH encoding) with LLVM's wasm32
 # compiler-rt builtins. `zig c++` / `zig cc` is a self-contained clang
-# 20.1.2 that brings those along, and is what CI uses:
+# 20.1.2 and is what CI uses; its own compiler-rt stays out of the link
+# (it carries a libm; port/musl.mk) so the builtins archive is named:
 #   make wasm WASM_CC="python3 -m ziglang cc" MUSL_AR="python3 -m ziglang ar" \
 #             WASM_CLANGXX="python3 -m ziglang c++" \
 #             WASM_EXTRA="-Xclang -target-feature -Xclang +exception-handling" \
+#             MUSL_RTLIB=/usr/lib/llvm-18/lib/clang/18/lib/wasi/libclang_rt.builtins-wasm32.a \
 #             WASM_OPT=node_modules/binaryen/bin/wasm-opt
 # Plain clang 20: WASM_CC=clang-20 MUSL_AR=llvm-ar-20 WASM_CLANGXX=clang++-20
 # (needs libclang-rt's wasm32 builtins installed). Run it:
@@ -95,8 +97,21 @@ $(MUSL_BUILD)/onelua.o: src/onelua.c $(MUSL_GENH)
 $(MUSL_BUILD)/luaw-eh.o: port/luaw-eh.cpp $(MUSL_GENH)
 	$(WASM_CLANGXX) $(WASM_EHFLAGS) -c $< -o $@
 
-$(MUSL_BUILD)/lua.linked.wasm: $(MUSL_BUILD)/onelua.o $(MUSL_BUILD)/luaw-eh.o $(MUSL_RT) $(MUSL_A)
-	$(WASM_CLANGXX) $(MUSL_LDFLAGS) -Wl,--strip-all $(MUSL_RT) $(MUSL_BUILD)/onelua.o $(MUSL_BUILD)/luaw-eh.o $(MUSL_A) $(MUSL_RTLIB) -o $@
+# The archive every consumer links, lua.wasm included: onelua.o, the EH
+# unit, the OS layer and every musl member (an MRI script, since ar
+# cannot nest archives). The crt stays a separate object, named on the
+# link line as crt objects are; --export=luaw_init pulls onelua.o in
+# (the export every host calls first), the rest follows by reference.
+# lua.wasm is this archive linked with nothing added -- the tarball
+# (make sdk) ships the same file, so a consumer's Lua is the artifact's
+# own bytes.
+LUA_WASM_A= $(MUSL_BUILD)/liblua-wasm.a
+$(LUA_WASM_A): $(MUSL_BUILD)/onelua.o $(MUSL_BUILD)/luaw-eh.o $(MUSL_RT) $(MUSL_A)
+	rm -f $@
+	printf 'create $@\naddmod $(MUSL_BUILD)/onelua.o\naddmod $(MUSL_BUILD)/luaw-eh.o\naddmod $(MUSL_BUILD)/luaw-sys.o\naddmod $(MUSL_BUILD)/luaw-fs.o\naddlib $(MUSL_A)\nsave\nend\n' | $(MUSL_AR) -M
+
+$(MUSL_BUILD)/lua.linked.wasm: $(LUA_WASM_A) $(MUSL_BUILD)/luaw-crt.o | musl-rtlib
+	$(WASM_CLANGXX) $(MUSL_LDFLAGS) -Wl,--strip-all $(MUSL_BUILD)/luaw-crt.o -Wl,--export=luaw_init -L$(MUSL_BUILD) -llua-wasm $(MUSL_RTLIB) -o $@
 
 $(WASM_O): $(MUSL_BUILD)/lua.linked.wasm
 	@if [ -n "$(WASM_OPT)" ]; then \
@@ -117,6 +132,45 @@ LUA_JS= lua.js
 $(LUA_JS): $(WASM_O) scripts/host.mjs scripts/loader.js scripts/build-lua-js.mjs
 	node scripts/build-lua-js.mjs $@ $(WASM_O)
 lua-js: $(LUA_JS)
+
+# ── The tarball: the compiled interpreter and its C stack for linking ──────
+# The embedding principle (design record, 2026-10-14): a consumer with
+# compiled code of its own (C, C++, Rust on wasm32) links Lua into the
+# same module as that code, so it takes the pieces lua.wasm is linked
+# from, before the link: lib/liblua-wasm.a (the archive lua.wasm itself is
+# linked from, above), lib/crt-reactor.o (named explicitly on
+# the link line, as crt objects are), include/ (Lua's four headers and
+# the libc's, laid out as a sysroot), src/ (the sources, a fallback for
+# unusual defines), PIN. lua.wasm is this archive linked with nothing
+# added, which sdk-check proves by relinking it from the tarball alone.
+# A consumer with a real C++ runtime compiles port/luaw-eh.cpp itself
+# with -DLUAW_EXTERNAL_EH (src/ carries it). LINK.md joins in the doc
+# pass. Version: the nearest tag (SDK_VERSION= overrides, as the
+# release does).
+SDK_VERSION?= $(shell git describe --tags --always 2>/dev/null || echo untagged)
+SDK= lua-wasm-sdk-$(SDK_VERSION)
+SDK_DIR= build/sdk/$(SDK)
+sdk: $(LUA_WASM_A) $(MUSL_BUILD)/luaw-crt.o
+	rm -rf build/sdk && mkdir -p $(SDK_DIR)/lib $(SDK_DIR)/include/bits $(SDK_DIR)/src/port
+	cp $(LUA_WASM_A) $(SDK_DIR)/lib/liblua-wasm.a
+	cp $(MUSL_BUILD)/luaw-crt.o $(SDK_DIR)/lib/crt-reactor.o
+	cp -r $(MUSL_DIR)/include/. $(SDK_DIR)/include/
+	cp $(MUSL_DIR)/arch/generic/bits/*.h $(SDK_DIR)/include/bits/ && cp $(MUSL_ARCH)/bits/*.h $(SDK_DIR)/include/bits/ && cp $(MUSL_BUILD)/include/bits/*.h $(SDK_DIR)/include/bits/
+	cp $(MUSL_ARCH)/*.h $(SDK_DIR)/include/
+	cp src/lua.h src/lauxlib.h src/lualib.h src/luaconf.h src/lua.hpp $(SDK_DIR)/include/
+	cp src/*.c src/*.h $(SDK_DIR)/src/ && cp port/luaw-eh.cpp port/luaw-crt.c port/luaw-sys.c port/luaw-fs.c $(SDK_DIR)/src/port/
+	printf 'lua.wasm %s\ncommit %s\nlua 5.4.8 verbatim; musl 1.2.6 verbatim\n' "$(SDK_VERSION)" "$$(git rev-parse HEAD 2>/dev/null || echo unknown)" > $(SDK_DIR)/PIN
+	[ -f doc/sdk/LINK.md ] && cp doc/sdk/LINK.md $(SDK_DIR)/LINK.md || true
+	tar czf $(SDK).tar.gz -C build/sdk $(SDK)
+	@ls -l $(SDK).tar.gz | awk '{print $$9": "$$5" bytes"}'
+
+# the proof that the tarball is the artifact's own bytes: lua.wasm relinked
+# from the tarball's lib/ alone, with the link line LINK.md gives a
+# consumer, then optimized the same way, is byte-identical to lua.wasm
+sdk-check: sdk $(WASM_O) | musl-rtlib
+	$(WASM_CLANGXX) $(MUSL_LDFLAGS) -Wl,--strip-all $(SDK_DIR)/lib/crt-reactor.o -Wl,--export=luaw_init -L$(SDK_DIR)/lib -llua-wasm $(MUSL_RTLIB) -o build/sdk/relinked.linked.wasm
+	@if [ -n "$(WASM_OPT)" ]; then $(WASM_OPT) $(WASM_OPT_FLAGS) build/sdk/relinked.linked.wasm -o build/sdk/relinked.wasm; else cp build/sdk/relinked.linked.wasm build/sdk/relinked.wasm; fi
+	cmp build/sdk/relinked.wasm $(WASM_O) && echo "SDK CHECK PASS: lua.wasm relinked from the tarball is byte-identical"
 
 # ── The benchmark (issue #54) ───────────────────────────────────────────────
 # lua.js against Wasmoon and fengari-web, pinned, in the same page under a
@@ -146,4 +200,4 @@ differential: $(WASM_O) $(NATIVE_MUSL_LUA)
 	sh scripts/differential.sh $(WASM_O) $(NATIVE_MUSL_LUA)
 
 # list targets that do not create files (but not all makes understand .PHONY)
-.PHONY: $(PLATS) clean wasm lua-js bench lua-debug oracle differential
+.PHONY: $(PLATS) clean wasm lua-js sdk sdk-check bench lua-debug oracle differential
